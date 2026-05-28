@@ -3,7 +3,7 @@
 from orthax.legendre import legder, legval
 
 from desc.backend import eigh_tridiagonal, jnp, put
-from desc.utils import errorif
+from desc.utils import errorif, safediv
 
 
 def bijection_to_disc(x, a, b):
@@ -317,3 +317,199 @@ def get_quadrature(quad, automorphism):
         w = w * grad_auto(x)
         x = auto(x)
     return x, w
+
+
+def _periodic_voronoi_widths(alpha, valid, period=2 * jnp.pi):
+    """Periodic Voronoi neighbor distances and cell widths."""
+    dist = (alpha[..., None, :] - alpha[..., :, None]) % period
+    dist = jnp.where(
+        valid[..., :, None] & valid[..., None, :] & (dist > 0), dist, jnp.inf
+    )
+    has_neighbors = valid.sum(-1, keepdims=True) > 1
+    prev_width = jnp.where(has_neighbors, dist.min(-2), period)
+    next_width = jnp.where(has_neighbors, dist.min(-1), period)
+    width = 0.5 * (prev_width + next_width)
+    return prev_width, next_width, width
+
+
+class _LossCone:
+    """Utilities for periodic loss-cone indicators."""
+
+    @staticmethod
+    def _root(score, dx):
+        """Find outside-to-inside crossings of a branch score."""
+        previous = jnp.roll(score, 1, axis=-3)
+        event = (score > 0) & (previous <= 0)
+        offset = safediv(dx * score, score - previous)
+        return event, offset
+
+    @staticmethod
+    def _cell_weight(center, stop, dx, period=2 * jnp.pi):
+        """Fraction of each periodic cell covered by an interval."""
+        cell_start = center - dx / 2
+        cell_stop = center + dx / 2
+        shift = period * jnp.arange(-1, 2)
+        coverage = (
+            (
+                jnp.minimum(cell_stop[..., None] + shift, stop[..., None])
+                - jnp.maximum(cell_start[..., None] + shift, 0.0)
+            )
+            .clip(0.0, dx)
+            .sum(-1)
+        )
+        return coverage / dx
+
+    @staticmethod
+    def _root_nonuniform(score, alpha, valid, period=2 * jnp.pi):
+        """Find negative-to-positive crossings on a nonuniform periodic grid."""
+        # dist[..., i, j] is the forward distance from sample i to sample j.
+        dist = (alpha[..., None, :] - alpha[..., :, None]) % period
+        dist = jnp.where(
+            valid[..., :, None] & valid[..., None, :] & (dist > 0), dist, jnp.inf
+        )
+        prev_idx = dist.argmin(axis=-2)
+        prev_dist = jnp.take_along_axis(dist, prev_idx[..., None, :], axis=-2)[
+            ..., 0, :
+        ]
+        previous = jnp.take_along_axis(score, prev_idx, axis=-1)
+        has_previous = jnp.isfinite(prev_dist)
+        event = valid & has_previous & (score > 0) & (previous <= 0)
+        offset = jnp.where(
+            has_previous, safediv(prev_dist * score, score - previous), 0.0
+        )
+        return event, (alpha - offset) % period
+
+    @staticmethod
+    def _cell_weight_nonuniform(root, stop, alpha, valid, period=2 * jnp.pi):
+        """Fraction of each nonuniform periodic cell covered by an interval."""
+        prev_width, _, width = _periodic_voronoi_widths(alpha, valid, period)
+        cell_left = alpha - 0.5 * prev_width
+        left = (cell_left[..., None, :] - root[..., :, None]) % period
+        right = left + width[..., None, :]
+        shift = period * jnp.arange(-1, 2)
+        coverage = (
+            (
+                jnp.minimum(right[..., None] + shift, stop[..., None])
+                - jnp.maximum(left[..., None] + shift, 0.0)
+            )
+            .clip(0.0, width[..., None, :, None])
+            .sum(-1)
+        )
+        return coverage / width[..., None, :]
+
+    @staticmethod
+    def indicator_nonuniform(
+        start_score, stop_score, alpha, valid, period=2 * jnp.pi, order=1
+    ):
+        """Periodic interval indicator on a nonuniform alpha grid.
+
+        The alpha/sample axis is ``-3`` on input and restored on output.
+        ``order=0`` returns a sampled boolean indicator. ``order=1`` uses
+        linearly interpolated zero crossings of the signed scores to return
+        fractional cell weights in ``[0,1]``.
+
+        """
+        start_score = start_score.swapaxes(-3, -1)
+        stop_score = stop_score.swapaxes(-3, -1)
+        alpha = alpha.swapaxes(-3, -1)
+        valid = valid.swapaxes(-3, -1)
+
+        dist = (alpha[..., None, :] - alpha[..., :, None]) % period
+        if order == 0:
+            start_sample = (start_score > 0) & valid
+            stop_sample = (stop_score > 0) & valid
+            first_stop = jnp.where(stop_sample[..., None, :], dist, jnp.inf).min(
+                -1, keepdims=True
+            )
+            loss_cone = (
+                start_sample[..., None]
+                & jnp.isfinite(first_stop)
+                & valid[..., None, :]
+                & (dist <= first_stop)
+            )
+            return loss_cone.any(-2).swapaxes(-3, -1)
+
+        errorif(order != 1, msg="Loss cone indicator order must be 0 or 1.")
+        start_crossing, start_alpha = _LossCone._root_nonuniform(
+            start_score, alpha, valid, period
+        )
+        stop_crossing, stop_alpha = _LossCone._root_nonuniform(
+            stop_score, alpha, valid, period
+        )
+
+        stop_dist = (stop_alpha[..., None, :] - start_alpha[..., :, None]) % period
+        first_stop = jnp.where(stop_crossing[..., None, :], stop_dist, jnp.inf).min(
+            -1, keepdims=True
+        )
+        loss_cone = (
+            start_crossing[..., None]
+            * jnp.isfinite(first_stop)
+            * valid[..., None, :]
+            * _LossCone._cell_weight_nonuniform(
+                start_alpha, first_stop, alpha, valid, period
+            )
+        )
+        return loss_cone.sum(-2).clip(0.0, 1.0).swapaxes(-3, -1)
+
+    @staticmethod
+    def indicator(start_score, stop_score, dist, dx=None, period=2 * jnp.pi, order=1):
+        """Periodic interval indicator from branch start and stop scores.
+
+        Parameters
+        ----------
+        start_score, stop_score : ndarray
+            Signed branch scores, positive where the start or stop branch is active.
+            The sample axis is axis ``-3``.
+        dist : ndarray
+            Forward periodic distance matrix. ``dist[i,j]`` is the distance from
+            sample ``i`` to sample ``j``.
+        dx : float
+            Uniform sample spacing along axis ``-3``. Required when ``order=1``.
+        period : float
+            Period of the coordinate. Default is ``2π``.
+        order : int
+            Interpolation order.
+
+        Returns
+        -------
+        weight : ndarray
+            Loss-cone cell weights in ``[0,1]`` with the same shape as
+            ``start_score`` and ``stop_score``.
+
+        """
+        if order == 0:
+            start = (start_score > 0).swapaxes(-3, -1)
+            stop = (stop_score > 0).swapaxes(-3, -1)
+
+            first_stop = jnp.where(stop[..., None, :], dist, jnp.inf).min(
+                -1, keepdims=True
+            )
+            loss_cone = (
+                start[..., None] & jnp.isfinite(first_stop) & (dist <= first_stop)
+            )
+            return loss_cone.any(-2).swapaxes(-3, -1)
+
+        errorif(dx is None, msg="dx is required when order=1.")
+
+        start, start_offset = _LossCone._root(start_score, dx)
+        stop, stop_offset = _LossCone._root(stop_score, dx)
+
+        start = start.swapaxes(-3, -1)
+        stop = stop.swapaxes(-3, -1)
+        start_offset = start_offset.swapaxes(-3, -1)
+        stop_offset = stop_offset.swapaxes(-3, -1)
+
+        stop_dist = (
+            dist + start_offset[..., None] - stop_offset[..., None, :]
+        ) % period
+        first_stop = jnp.where(stop[..., None, :], stop_dist, jnp.inf).min(
+            -1, keepdims=True
+        )
+
+        center = (dist + start_offset[..., None]) % period
+        loss_cone = (
+            start[..., None]
+            * jnp.isfinite(first_stop)
+            * _LossCone._cell_weight(center, first_stop, dx, period)
+        )
+        return loss_cone.sum(-2).clip(0.0, 1.0).swapaxes(-3, -1)
