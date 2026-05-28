@@ -9,6 +9,11 @@ Stellarator Optimization Package
 
 |Docs| |UnitTests| |RegressionTests| |Codecov|
 
+Improvements
+============
+Like the original package, but with bounce integrals as well as all the improvements
+`here <https://github.com/PlasmaControl/DESC/pulls/unalmis>`__.
+
 DESC solves for and optimizes 3D MHD equilibria using pseudo-spectral numerical methods
 and automatic differentiation.
 
