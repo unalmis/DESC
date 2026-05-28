@@ -11,7 +11,7 @@ Stellarator Optimization Package
 
 Improvements
 ============
-Like the original package, but all the improvements here
+Like the original package, but all the improvements
 `here <https://github.com/PlasmaControl/DESC/pulls/unalmis>`__.
 
 DESC solves for and optimizes 3D MHD equilibria using pseudo-spectral numerical methods
