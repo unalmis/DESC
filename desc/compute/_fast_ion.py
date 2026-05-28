@@ -1,13 +1,35 @@
-"""Compute functions for fast ion confinement."""
+"""Compute functions for fast ion confinement.
+
+References
+----------
+.. [1] V. V. Nemov, S. V. Kasilov, W. Kernbichler, and G. O. Leitold,
+       "Poloidal motion of trapped particle orbits in real-space coordinates,"
+       Phys. Plasmas 15, 052501 (2008). https://doi.org/10.1063/1.2912456.
+.. [2] J. L. Velasco, I. Calvo, S. Mulas, E. Sanchez, F. I. Parra, A. Cappa,
+       and the W7-X Team, "A model for the fast evaluation of prompt losses of
+       energetic ions in stellarators," Nucl. Fusion 61, 116059 (2021).
+       https://doi.org/10.1088/1741-4326/ac2994.
+.. [3] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
+       bounce-averaging algorithm and its applications,"
+       J. Plasma Physics. https://doi:10.1017/S0022377826101652.
+
+"""
 
 from functools import partial
 
 from desc.backend import jit, jnp
 
 from ..batching import batch_map
-from ..integrals.bounce_integral import Bounce2D
+from ..integrals.bounce_integral import Bounce2D, Options
+from ..integrals.quad_utils import _LossCone, _periodic_voronoi_widths
 from ..utils import cross, dot, safediv
-from ._neoclassical import _bounce_doc, _bounce_static_argnames
+from ._drift import (
+    _alpha_drift_wb_inverse,
+    _radial_drift,
+    _radial_drift_wb_inverse,
+    _v_tau,
+    _vartheta_drift,
+)
 from .data_index import register_compute_fun
 
 # We rewrite equivalents of Nemov et al.'s expressions (21, 22) to resolve
@@ -26,26 +48,25 @@ from .data_index import register_compute_fun
 # (|∇ρ| ‖e_α|ρ,ϕ‖)ᵢ ∫ dℓ [ (1 − λ|B|/2)/√(1 − λ|B|) ∂|B|/∂ρ + √(1 − λ|B|) K ] / |B|
 
 
-def _v_tau(data, B, pitch):
-    # Note v τ = 4λ⁻²B₀⁻¹ ∂I/∂((λB₀)⁻¹) where v is the particle velocity,
-    # τ is the bounce time, and I is defined in Nemov et al. eq. 36.
-    return safediv(2.0, jnp.sqrt(jnp.abs(1 - pitch * B)))
+def _gamma_c_data(data):
+    # The grid has to be dense enough to avoid aliasing error on |B| anyway,
+    # so we might as well interplate anything smoother than |B| with one
+    # Fourier series rather than transforming each term. Last term in K
+    # behaves as ∂log(|B|²/(R₀B₀B^ϕ))/∂ρ |B| where R₀B₀ is a constant with
+    # units Tesla meters. Smoothness is determined by positive lower bound of
+    # log argument, and hence behaves as ∂log(|B|/B₀)/∂ρ |B| = ∂|B|/∂ρ.
+    return {
+        "|grad(psi)|*kappa_g": data["|grad(psi)|*kappa_g"],
+        "|grad(rho)|*|e_alpha|r,p|": data["|grad(rho)|"] * data["|e_alpha|r,p|"],
+        "|B|_r|v,p": data["|B|_r|v,p"],
+        "K": data["iota_r"]
+        * dot(cross(data["grad(psi)"], data["b"]), data["grad(phi)"])
+        - (2 * data["|B|_r|v,p"] - data["|B|"] * data["B^phi_r|v,p"] / data["B^phi"]),
+    }
 
 
-def _drift1(data, B, pitch):
-    return (
-        safediv(1 - 0.5 * pitch * B, jnp.sqrt(jnp.abs(1 - pitch * B)))
-        * data["|grad(psi)|*kappa_g"]
-        / B
-    )
-
-
-def _drift2(data, B, pitch):
-    return (
-        safediv(1 - 0.5 * pitch * B, jnp.sqrt(jnp.abs(1 - pitch * B)))
-        * data["|B|_r|v,p"]
-        + jnp.sqrt(jnp.abs(1 - pitch * B)) * data["K"]
-    ) / B
+def _gamma_c(radial_drift, poloidal_drift, weight=1.0):
+    return (2 / jnp.pi) * jnp.arctan(safediv(radial_drift, poloidal_drift * weight))
 
 
 @register_compute_fun(
@@ -72,30 +93,20 @@ def _drift2(data, B, pitch):
         "b",
         "grad(phi)",
         "grad(psi)",
-        "|grad(psi)|",
         "|grad(rho)|",
         "|e_alpha|r,p|",
-        "kappa_g",
+        "|grad(psi)|*kappa_g",
         "iota_r",
         "V_psi",
     ]
     + Bounce2D.required_names,
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
-    **_bounce_doc,
+    **Options._doc,
 )
-@partial(jit, static_argnames=_bounce_static_argnames)
+@partial(jit, static_argnames=Options._static_argnames)
 def _Gamma_c(params, transforms, profiles, data, **kwargs):
-    """Fast ion confinement proxy as defined by Nemov et al.
-
-    [1] Poloidal motion of trapped particle orbits in real-space coordinates.
-        V. V. Nemov, S. V. Kasilov, W. Kernbichler, G. O. Leitold.
-        Phys. Plasmas 1 May 2008; 15 (5): 052501.
-        https://doi.org/10.1063/1.2912456.
-        Equation 61.
-
-    [2] Spectrally accurate, reverse-mode differentiable bounce-averaging algorithm
-        and its applications. Kaya Unalmis et al. Journal of Plasma Physics.
+    """Equation 61 of [1]_.
 
     A 3D stellarator magnetic field admits ripple wells that lead to enhanced
     radial drift of trapped particles. The energetic particle confinement
@@ -110,112 +121,48 @@ def _Gamma_c(params, transforms, profiles, data, **kwargs):
     """
     # noqa: unused dependency
     grid = transforms["grid"]
-    (
-        angle,
-        Y_B,
-        alpha,
-        num_transit,
-        num_well,
-        num_pitch,
-        pitch_batch_size,
-        surf_batch_size,
-        nufft_eps,
-        spline,
-        quad,
-        vander,
-    ) = Bounce2D._defaults(-2, grid, **kwargs)
+    opts = Options.guess(-2, grid, **kwargs)
 
-    def Gamma_c(data):
-        bounce = Bounce2D(
-            grid,
-            data,
-            data["angle"],
-            Y_B,
-            alpha,
-            num_transit,
-            quad,
-            nufft_eps=nufft_eps,
-            is_fourier=True,
-            spline=spline,
-            vander=vander,
-        )
+    def foreach_surface(data):
 
-        def fun(pitch_inv):
-            points = bounce.points(pitch_inv, num_well)
-            v_tau, drift1, drift2 = bounce.integrate(
-                [_v_tau, _drift1, _drift2],
+        def foreach(pitch_inv):
+            points = bounce.points(pitch_inv, opts.num_well)
+            v_tau, radial, poloidal = bounce.integrate(
+                [_v_tau, _radial_drift, _vartheta_drift],
                 pitch_inv,
                 data,
                 ["|grad(psi)|*kappa_g", "|B|_r|v,p", "K"],
                 points,
-                nufft_eps=nufft_eps,
-                is_fourier=True,
             )
-            # This is γ_c π/2.
-            gamma_c = jnp.arctan(
-                safediv(
-                    drift1,
-                    drift2
-                    * bounce.interp_to_argmin(
-                        data["|grad(rho)|*|e_alpha|r,p|"],
-                        points,
-                        nufft_eps=nufft_eps,
-                        is_fourier=True,
-                    ),
-                )
+            return _reduction_gamma_c(
+                v_tau,
+                radial,
+                poloidal
+                * bounce.interp_to_argmin(data["|grad(rho)|*|e_alpha|r,p|"], points),
             )
-            return (v_tau * gamma_c**2).sum(-1).mean(-2)
 
+        pitch_inv, weight = Bounce2D.pitch_quad(
+            data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
+        )
+        bounce = Bounce2D(grid, data, data["angle"], **opts)
         return jnp.sum(
-            batch_map(fun, data["pitch_inv"], pitch_batch_size)
-            * data["pitch_inv weight"]
-            / data["pitch_inv"] ** 2,
+            batch_map(foreach, pitch_inv, opts.pitch_batch_size)
+            * (weight / pitch_inv**2),
             axis=-1,
         )
 
-    # It is assumed the grid is sufficiently dense to reconstruct |B|,
-    # so anything smoother than |B| may be captured accurately as a single
-    # Fourier series rather than transforming each component. Last term in K
-    # behaves as ∂log(|B|²/(R₀B₀B^ϕ))/∂ρ |B| where R₀B₀ is a constant with
-    # units Tesla meters. Smoothness is determined by positive lower bound of
-    # log argument, and hence behaves as ∂log(|B|/B₀)/∂ρ |B| = ∂|B|/∂ρ.
-    fun_data = {
-        "|grad(psi)|*kappa_g": data["|grad(psi)|"] * data["kappa_g"],
-        "|grad(rho)|*|e_alpha|r,p|": data["|grad(rho)|"] * data["|e_alpha|r,p|"],
-        "|B|_r|v,p": data["|B|_r|v,p"],
-        "K": data["iota_r"]
-        * dot(cross(data["grad(psi)"], data["b"]), data["grad(phi)"])
-        - (2 * data["|B|_r|v,p"] - data["|B|"] * data["B^phi_r|v,p"] / data["B^phi"]),
-    }
-    data["Gamma_c"] = (
-        Bounce2D.batch(
-            Gamma_c,
-            fun_data,
-            data,
-            angle,
-            grid,
-            num_pitch,
-            surf_batch_size,
-            expand_out=True,
-        )
-        / data["V_psi"]
-        / (num_transit * 2**0.5)
+    out = Bounce2D.batch(
+        foreach_surface,
+        data,
+        grid,
+        angle=kwargs["angle"],
+        custom_data=_gamma_c_data(data),
+        batch_size=opts.surf_batch_size,
     )
+    assert out.ndim == 1
+    scalar = jnp.pi**2 / 2**2.5 * grid.NFP / opts.num_field_periods
+    data["Gamma_c"] = grid.expand(out * scalar) / data["V_psi"]
     return data
-
-
-def _radial_drift(data, B, pitch):
-    return safediv(
-        data["cvdrift0"] * (1 - 0.5 * pitch * B), jnp.sqrt(jnp.abs(1 - pitch * B))
-    )
-
-
-def _poloidal_drift(data, B, pitch):
-    return safediv(
-        (data["gbdrift (periodic)"] + data["gbdrift (secular)/phi"] * data["zeta"])
-        * (1 - 0.5 * pitch * B),
-        jnp.sqrt(jnp.abs(1 - pitch * B)),
-    )
 
 
 @register_compute_fun(
@@ -238,20 +185,19 @@ def _poloidal_drift(data, B, pitch):
         "b",
         "grad(phi)",
         "grad(psi)",
-        "|grad(psi)|",
         "|grad(rho)|",
         "|e_alpha|r,p|",
-        "kappa_g",
+        "|grad(psi)|*kappa_g",
         "iota_r",
     ]
     + Bounce2D.required_names,
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
-    **_bounce_doc,
+    **Options._doc,
 )
-@partial(jit, static_argnames=_bounce_static_argnames)
+@partial(jit, static_argnames=Options._static_argnames)
 def _little_gamma_c_Nemov(params, transforms, profiles, data, **kwargs):
-    """Fast ion confinement proxy as defined by Nemov et al.
+    """Equation 50 of [1]_.
 
     Returns
     -------
@@ -261,80 +207,151 @@ def _little_gamma_c_Nemov(params, transforms, profiles, data, **kwargs):
     """
     # noqa: unused dependency
     grid = transforms["grid"]
-    (
-        angle,
-        Y_B,
-        alpha,
-        num_transit,
-        num_well,
-        num_pitch,
-        _,
-        _,
-        nufft_eps,
-        spline,
-        quad,
-        vander,
-    ) = Bounce2D._defaults(-2, grid, **kwargs)
+    opts = Options.guess(-2, grid, loop=True, **kwargs)
 
-    def gamma_c0(data):
-        bounce = Bounce2D(
-            grid,
-            data,
-            data["angle"],
-            Y_B,
-            alpha,
-            num_transit,
-            quad,
-            nufft_eps=nufft_eps,
-            is_fourier=True,
-            spline=spline,
-            vander=vander,
+    def foreach_surface(data):
+        pitch_inv, _ = Bounce2D.pitch_quad(
+            data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
         )
-
-        points = bounce.points(data["pitch_inv"], num_well)
-        drift1, drift2 = bounce.integrate(
-            [_drift1, _drift2],
-            data["pitch_inv"],
-            data,
-            ["|grad(psi)|*kappa_g", "|B|_r|v,p", "K"],
-            points,
-            nufft_eps=nufft_eps,
-            is_fourier=True,
-            low_ram=True,
-        )
-        return (2 / jnp.pi) * jnp.arctan(
-            safediv(
-                drift1,
-                drift2
-                * bounce.interp_to_argmin(
-                    data["|grad(rho)|*|e_alpha|r,p|"],
-                    points,
-                    nufft_eps=nufft_eps,
-                    is_fourier=True,
-                ),
-            )
+        bounce = Bounce2D(grid, data, data["angle"], **opts)
+        points = bounce.points(pitch_inv, opts.num_well)
+        return _gamma_c(
+            *bounce.integrate(
+                [_radial_drift, _vartheta_drift],
+                pitch_inv,
+                data,
+                ["|grad(psi)|*kappa_g", "|B|_r|v,p", "K"],
+                points,
+                loop=opts.loop,
+            ),
+            bounce.interp_to_argmin(data["|grad(rho)|*|e_alpha|r,p|"], points),
         ).sum(-1)
 
-    fun_data = {
-        "|grad(psi)|*kappa_g": data["|grad(psi)|"] * data["kappa_g"],
-        "|grad(rho)|*|e_alpha|r,p|": data["|grad(rho)|"] * data["|e_alpha|r,p|"],
-        "|B|_r|v,p": data["|B|_r|v,p"],
-        "K": data["iota_r"]
-        * dot(cross(data["grad(psi)"], data["b"]), data["grad(phi)"])
-        - (2 * data["|B|_r|v,p"] - data["|B|"] * data["B^phi_r|v,p"] / data["B^phi"]),
-    }
     data["gamma_c"] = Bounce2D.batch(
-        gamma_c0, fun_data, data, angle, grid, num_pitch, 1
+        foreach_surface,
+        data,
+        grid,
+        angle=kwargs["angle"],
+        custom_data=_gamma_c_data(data),
+        batch_size=1,
+        sparse=False,  # don't know of any applications that differentiate anyway
     )
     return data
+
+
+def _reduction_gamma_c(v_tau, radial, poloidal, opts=None):
+    return (v_tau * _gamma_c(radial, poloidal) ** 2).sum(-1).mean(-2)
+
+
+def _reshape_iota(iota, suffix_ndim):
+    """Reshape iota to broadcast over prefixed surface data."""
+    iota = jnp.asarray(iota)
+    prefix = () if iota.size == 1 else iota.shape
+    return iota.reshape(prefix + (1,) * suffix_ndim)
+
+
+def _well_field_period(points, NFP):
+    """Locate each long-field-line well by its midpoint field period."""
+    z1, z2 = points
+    midpoint = 0.5 * (z1 + z2)
+    return ((NFP * midpoint) // (2 * jnp.pi)).astype(jnp.int32)
+
+
+def _local_well_rank(field_period, valid):
+    """Rank wells within each single-field-period segment."""
+    well = jnp.arange(field_period.shape[-1])
+    previous = well[None, :] < well[:, None]
+    return (
+        (field_period[..., None] == field_period[..., None, :])
+        & valid[..., None, :]
+        & previous
+    ).sum(-1)
+
+
+def _fold_wells_to_alpha(values, points, opts, iota, NFP):
+    """Treat long-field-line wells as denser alpha samples over one field period."""
+    z1, z2 = points
+    valid_well = z1 < z2
+    well_field_period = _well_field_period(points, NFP)
+    local_well_index = _local_well_rank(well_field_period, valid_well)
+    num_alpha, num_pitch, num_well = z1.shape[-3:]
+    prefix = z1.shape[:-3]
+
+    field_period_index = jnp.arange(opts.num_field_periods).reshape(
+        (1, opts.num_field_periods, 1, 1, 1)
+    )
+    local_well_slot = jnp.arange(num_well).reshape((1, 1, 1, 1, num_well))
+    # Axes: prefix, base alpha, field period, pitch, original well, local well.
+    well_to_alpha = (
+        valid_well[..., :, None, :, :, None]
+        & (well_field_period[..., :, None, :, :, None] == field_period_index)
+        & (local_well_index[..., :, None, :, :, None] == local_well_slot)
+    )
+
+    def fold(value):
+        value = jnp.where(well_to_alpha, value[..., :, None, :, :, None], 0.0).sum(-2)
+        return value.reshape(
+            prefix + (num_alpha * opts.num_field_periods, num_pitch, num_well)
+        )
+
+    alpha = opts.alpha.reshape((1,) * len(prefix) + (num_alpha, 1))
+    alpha = alpha + _reshape_iota(iota, 2) * (2 * jnp.pi / NFP) * jnp.arange(
+        opts.num_field_periods
+    )
+    alpha = (alpha % (2 * jnp.pi)).reshape(
+        prefix + (num_alpha * opts.num_field_periods, 1, 1)
+    )
+    mask = well_to_alpha.any(-2).reshape(
+        prefix + (num_alpha * opts.num_field_periods, num_pitch, num_well)
+    )
+    return (*[fold(value) for value in values], alpha, mask)
+
+
+def _alpha_weights(alpha, valid, period=2 * jnp.pi):
+    """Periodic Voronoi cell widths for a possibly nonuniform alpha grid."""
+    alpha = alpha.swapaxes(-3, -1)
+    valid = valid.swapaxes(-3, -1)
+    count = valid.sum(-1, keepdims=True)
+    _, _, width = _periodic_voronoi_widths(alpha, valid, period)
+    weight = jnp.where(count == 1, 1.0, width / period)
+    return jnp.where(valid, weight, 0.0).swapaxes(-3, -1)
+
+
+def _reduction_gamma_delta(v_tau, radial, poloidal, opts, alpha, mask):
+    v_tau = (v_tau * _alpha_weights(alpha, mask)).sum(-3)
+    outward_superbanana = (radial > opts.thresh * jnp.abs(poloidal)).any(-3)
+    return (v_tau * outward_superbanana).sum(-1)
+
+
+def _reduction_gamma_alpha(v_tau, radial, poloidal, opts, alpha, mask, order=1):
+    thresh = opts.thresh * jnp.abs(poloidal)
+    outward_score = radial - thresh  # alpha out candidate
+    inward_score = -radial - thresh  # alpha in candidate
+
+    loss_cone = jnp.where(
+        poloidal >= 0,
+        _LossCone.indicator_nonuniform(
+            inward_score, outward_score, alpha, mask, order=order
+        ),
+        _LossCone.indicator_nonuniform(
+            outward_score, inward_score, alpha, mask, order=order
+        ),
+    )
+    has_alpha_out = (outward_score > 0).any(-3, keepdims=True)
+    has_alpha_in = (inward_score > 0).any(-3, keepdims=True)
+    loss_cone = (has_alpha_out & has_alpha_in) * loss_cone + (
+        has_alpha_out & ~has_alpha_in
+    )
+    return (v_tau * loss_cone * _alpha_weights(alpha, mask)).sum((-3, -1))
 
 
 @register_compute_fun(
     name="Gamma_c Velasco",
     label=(
-        # Γ_c = π/(8√2) ∫ dλ 〈 ∑ⱼ [v τ γ_c²]ⱼ 〉
-        "\\Gamma_c = \\frac{\\pi}{8 \\sqrt{2}} "
-        "\\int d\\lambda \\langle \\sum_j (v \\tau \\gamma_c^2)_j \\rangle"
+        "\\check{\\Gamma}_c = \\frac{1}{2} "
+        "\\left\\langle \\int d\\lambda \\frac{B}{\\sqrt{1 - \\lambda B}} "
+        "\\gamma_c^2"
+        "\\right\\rangle"
     ),
     units="~",
     units_long="None",
@@ -356,90 +373,161 @@ def _little_gamma_c_Nemov(params, transforms, profiles, data, **kwargs):
     + Bounce2D.required_names,
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
-    **_bounce_doc,
+    **Options._doc,
 )
-@partial(jit, static_argnames=_bounce_static_argnames)
+@partial(jit, static_argnames=Options._static_argnames)
 def _Gamma_c_Velasco(params, transforms, profiles, data, **kwargs):
-    """Fast ion confinement proxy as defined by Velasco et al.
-
-    [1] A model for the fast evaluation of prompt losses of energetic ions in
-        stellarators. Equation 16.
-        J.L. Velasco et al. 2021 Nucl. Fusion 61 116059.
-        https://doi.org/10.1088/1741-4326/ac2994.
-
-    [2] Spectrally accurate, reverse-mode differentiable bounce-averaging algorithm
-        and its applications. Kaya Unalmis et al. Journal of Plasma Physics.
-
-    """
+    """Equation 20 of [2]_."""
     # noqa: unused dependency
+    data["Gamma_c Velasco"] = _Gamma(
+        _reduction_gamma_c, params, transforms, profiles, data, **kwargs
+    )
+    return data
+
+
+@register_compute_fun(
+    name="Gamma_delta",
+    label=(
+        "\\Gamma_\\delta = \\frac{1}{2} "
+        "\\left\\langle \\int d\\lambda \\frac{B}{\\sqrt{1 - \\lambda B}} "
+        "H\\left(\\max_\\alpha \\gamma_c^* - \\gamma_\\mathrm{th}\\right) "
+        "\\right\\rangle"
+    ),
+    units="~",
+    units_long="None",
+    description="Fast ion superbanana proxy (scalar) "
+    "as defined by Velasco et al. (doi:10.1088/1741-4326/ac2994)",
+    dim=1,
+    params=[],
+    transforms={"grid": []},
+    profiles=[],
+    coordinates="r",
+    data=[
+        "min_tz |B|",
+        "max_tz |B|",
+        "cvdrift0",
+        "gbdrift (periodic)",
+        "gbdrift (secular)/phi",
+        "V_psi",
+    ]
+    + Bounce2D.required_names,
+    resolution_requirement="tz",
+    grid_requirement={"can_fft2": True},
+    **Options._doc,
+)
+@partial(jit, static_argnames=Options._static_argnames)
+def _Gamma_delta(params, transforms, profiles, data, **kwargs):
+    """Equation 22 of [2]_."""
+    # noqa: unused dependency
+    data["Gamma_delta"] = _Gamma(
+        _reduction_gamma_delta,
+        params,
+        transforms,
+        profiles,
+        data,
+        fold_alpha=True,
+        **kwargs,
+    )
+    return data
+
+
+@register_compute_fun(
+    name="Gamma_alpha",
+    label=(
+        "\\Gamma_\\alpha = \\frac{1}{2} "
+        "\\left\\langle \\int d\\lambda \\frac{B}{\\sqrt{1 - \\lambda B}} "
+        "H\\left((\\alpha_\\mathrm{out} - \\alpha)"
+        "\\mathbf{v}_M \\cdot \\nabla \\alpha\\right) "
+        "H\\left((\\alpha - \\alpha_\\mathrm{in})"
+        "\\mathbf{v}_M \\cdot \\nabla \\alpha\\right) "
+        "\\right\\rangle"
+    ),
+    units="~",
+    units_long="None",
+    description="Fast ion superbanana proxy (scalar) "
+    "as defined by Velasco et al. (doi:10.1088/1741-4326/ac2994)",
+    dim=1,
+    params=[],
+    transforms={"grid": []},
+    profiles=[],
+    coordinates="r",
+    data=[
+        "min_tz |B|",
+        "max_tz |B|",
+        "cvdrift0",
+        "gbdrift (periodic)",
+        "gbdrift (secular)/phi",
+        "V_psi",
+    ]
+    + Bounce2D.required_names,
+    resolution_requirement="tz",
+    grid_requirement={"can_fft2": True},
+    **Options._doc,
+)
+@partial(jit, static_argnames=Options._static_argnames)
+def _Gamma_alpha(params, transforms, profiles, data, **kwargs):
+    """Equation 25 of [2]_."""
+    # noqa: unused dependency
+    data["Gamma_alpha"] = _Gamma(
+        _reduction_gamma_alpha,
+        params,
+        transforms,
+        profiles,
+        data,
+        fold_alpha=True,
+        **kwargs,
+    )
+    return data
+
+
+def _Gamma(reduction, params, transforms, profiles, data, fold_alpha=False, **kwargs):
     grid = transforms["grid"]
-    (
-        angle,
-        Y_B,
-        alpha,
-        num_transit,
-        num_well,
-        num_pitch,
-        pitch_batch_size,
-        surf_batch_size,
-        nufft_eps,
-        spline,
-        quad,
-        vander,
-    ) = Bounce2D._defaults(-1, grid, **kwargs)
+    opts = Options.guess(-1, grid, **kwargs)
 
-    def Gamma_c(data):
-        bounce = Bounce2D(
-            grid,
-            data,
-            data["angle"],
-            Y_B,
-            alpha,
-            num_transit,
-            quad,
-            nufft_eps=nufft_eps,
-            is_fourier=True,
-            spline=spline,
-            vander=vander,
-        )
+    def foreach_surface(data):
 
-        def fun(pitch_inv):
-            v_tau, radial_drift, poloidal_drift = bounce.integrate(
-                [_v_tau, _radial_drift, _poloidal_drift],
+        def foreach(pitch_inv):
+            points = bounce.points(pitch_inv, opts.num_well) if fold_alpha else None
+            integrals = bounce.integrate(
+                [
+                    _v_tau,
+                    _radial_drift_wb_inverse,
+                    _alpha_drift_wb_inverse,
+                ],
                 pitch_inv,
                 data,
-                ["cvdrift0", "gbdrift (periodic)", "gbdrift (secular)/phi"],
-                num_well=num_well,
-                nufft_eps=nufft_eps,
-                is_fourier=True,
+                names,
+                points,
+                num_well=opts.num_well,
             )
-            # This is γ_c π/2.
-            gamma_c = jnp.arctan(safediv(radial_drift, poloidal_drift))
-            return (v_tau * gamma_c**2).sum(-1).mean(-2)
+            if fold_alpha:
+                *integrals, alpha, mask = _fold_wells_to_alpha(
+                    integrals, points, opts, data["iota"], grid.NFP
+                )
+                return reduction(*integrals, opts, alpha=alpha, mask=mask)
+            return reduction(*integrals, opts)
 
+        pitch_inv, weight = Bounce2D.pitch_quad(
+            data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
+        )
+        bounce = Bounce2D(grid, data, data["angle"], **opts)
         return jnp.sum(
-            batch_map(fun, data["pitch_inv"], pitch_batch_size)
-            * data["pitch_inv weight"]
-            / data["pitch_inv"] ** 2,
+            batch_map(foreach, pitch_inv, opts.pitch_batch_size)
+            * (weight / pitch_inv**2),
             axis=-1,
         )
 
-    data["Gamma_c Velasco"] = (
-        Bounce2D.batch(
-            Gamma_c,
-            {
-                "cvdrift0": data["cvdrift0"],
-                "gbdrift (periodic)": data["gbdrift (periodic)"],
-                "gbdrift (secular)/phi": data["gbdrift (secular)/phi"],
-            },
-            data,
-            angle,
-            grid,
-            num_pitch,
-            surf_batch_size,
-            expand_out=True,
-        )
-        / data["V_psi"]
-        / (num_transit * 2**0.5)
+    names = ("cvdrift0", "gbdrift (periodic)", "gbdrift (secular)/phi")
+    out = Bounce2D.batch(
+        foreach_surface,
+        data,
+        grid,
+        angle=kwargs["angle"],
+        names=names,
+        batch_size=opts.surf_batch_size,
     )
-    return data
+    assert out.ndim == 1
+    scalar = jnp.pi**3 / 16 * grid.NFP / opts.num_field_periods
+    if fold_alpha:
+        scalar *= opts.num_field_periods
+    return grid.expand(out * scalar) / data["V_psi"]

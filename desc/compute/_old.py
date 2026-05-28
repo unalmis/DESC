@@ -1,44 +1,46 @@
 """Old compute functions.
 
 These do not appear in the public documentation under the list of variables.
+They are kept for verification and correctness testing.
+
+References
+----------
+.. [1] V. V. Nemov, S. V. Kasilov, W. Kernbichler, and M. F. Heyn,
+       "Evaluation of 1/ν neoclassical transport in stellarators,"
+       Phys. Plasmas 6, 4622 (1999). https://doi.org/10.1063/1.873749.
+.. [2] V. V. Nemov, S. V. Kasilov, W. Kernbichler, and G. O. Leitold,
+       "Poloidal motion of trapped particle orbits in real-space coordinates,"
+       Phys. Plasmas 15, 052501 (2008). https://doi.org/10.1063/1.2912456.
+.. [3] J. L. Velasco, I. Calvo, S. Mulas, E. Sanchez, F. I. Parra, A. Cappa,
+       and the W7-X Team, "A model for the fast evaluation of prompt losses of
+       energetic ions in stellarators," Nucl. Fusion 61, 116059 (2021).
+       https://doi.org/10.1088/1741-4326/ac2994.
+
 """
 
 from functools import partial
 
-from orthax.legendre import leggauss
-
 from desc.backend import jit, jnp
 
-from ..integrals.bounce_integral import Bounce1D
-from ..integrals.quad_utils import (
-    automorphism_sin,
-    chebgauss2,
-    get_quadrature,
-    grad_automorphism_sin,
-)
-from ..utils import cross, dot, safediv
-from ._fast_ion import _drift1, _drift2, _radial_drift, _v_tau
-from ._neoclassical import _bounce_doc, _dI_1, _dI_2
+from ..integrals.bounce_integral import Bounce1D, Options
+from ..utils import safediv
+from ._drift import _radial_drift, _radial_drift_wb_inverse, _v_tau, _vartheta_drift
+from ._fast_ion import _gamma_c_data, _reduction_gamma_c
+from ._neoclassical import _I_1, _I_2
 from .data_index import register_compute_fun
 
 _bounce1D_doc = {
-    "num_well": _bounce_doc["num_well"],
-    "num_quad": _bounce_doc["num_quad"],
-    "num_pitch": _bounce_doc["num_pitch"],
-    "surf_batch_size": _bounce_doc["surf_batch_size"],
-    "quad": _bounce_doc["quad"],
+    "num_well": Options._doc["num_well"],
+    "num_quad": Options._doc["num_quad"],
+    "num_pitch": Options._doc["num_pitch"],
+    "surf_batch_size": Options._doc["surf_batch_size"],
+    "quad": Options._doc["quad"],
 }
 
 
 @register_compute_fun(
     name="old effective ripple 3/2",
-    label=(
-        # ε¹ᐧ⁵ = π/(8√2) R₀²〈|∇ψ|〉⁻² B₀⁻¹ ∫ dλ λ⁻² 〈 ∑ⱼ Hⱼ²/Iⱼ 〉
-        "\\epsilon_{\\mathrm{eff}}^{3/2} = \\frac{\\pi}{8 \\sqrt{2}} "
-        "R_0^2 \\langle \\vert\\nabla \\psi\\vert \\rangle^{-2} "
-        "B_0^{-1} \\int d\\lambda \\lambda^{-2} "
-        "\\langle \\sum_j H_j^2 / I_j \\rangle"
-    ),
+    label="\\epsilon_{\\mathrm{eff}}^{3/2}",
     units="~",
     units_long="None",
     description="Effective ripple modulation amplitude to 3/2 power",
@@ -50,9 +52,8 @@ _bounce1D_doc = {
     data=[
         "min_tz |B|",
         "max_tz |B|",
-        "kappa_g",
         "R0",
-        "|grad(rho)|",
+        "|grad(rho)|*kappa_g",
         "<|grad(rho)|>",
         "fieldline length",
     ]
@@ -62,59 +63,42 @@ _bounce1D_doc = {
     **_bounce1D_doc,
 )
 @partial(jit, static_argnames=["num_well", "num_quad", "num_pitch", "surf_batch_size"])
-def _epsilon_32_1D(params, transforms, profiles, data, **kwargs):
+def _old_epsilon_32(params, transforms, profiles, data, **kwargs):
     """Effective ripple modulation amplitude to 3/2 power.
 
-    [1] Evaluation of 1/ν neoclassical transport in stellarators.
-        V. V. Nemov, S. V. Kasilov, W. Kernbichler, M. F. Heyn.
-        Phys. Plasmas 1 December 1999; 6 (12): 4622–4632.
-        https://doi.org/10.1063/1.873749.
+    References [1]_.
 
     """
     # noqa: unused dependency
     grid = transforms["grid"].source_grid
-    num_well = kwargs.get("num_well", None)
-    num_pitch = kwargs.get("num_pitch", 51)
-    surf_batch_size = kwargs.get("surf_batch_size", 1)
-    quad = (
-        kwargs["quad"] if "quad" in kwargs else chebgauss2(kwargs.get("num_quad", 32))
-    )
+    opts = Options.guess(eta=1, grid=grid, Y_B=grid.num_zeta, **kwargs)
+    num_well = kwargs.get("num_well", -1)
 
-    def eps_32(data):
-        """(∂ψ/∂ρ)⁻² B₀⁻³ ∫ dλ λ⁻² ∑ⱼ Hⱼ²/Iⱼ."""
-        # B₀ has units of λ⁻¹.
-        # Nemov's ∑ⱼ Hⱼ²/Iⱼ = (∂ψ/∂ρ)² (λB₀)³ (I₁²/I₂).sum(-1).
-        # (λB₀)³ d(λB₀)⁻¹ = B₀² λ³ d(λ⁻¹) = -B₀² λ dλ.
-        bounce = Bounce1D(grid, data, quad, is_reshaped=True)
-        I_1, I_2 = bounce.integrate(
-            [_dI_1, _dI_2],
-            data["pitch_inv"],
-            data,
-            ["|grad(rho)|*kappa_g"],
-            num_well=num_well,
+    def foreach_surface(data):
+        pitch_inv, weight = Bounce1D.pitch_quad(
+            data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
+        )
+        I_1, I_2 = Bounce1D(grid, data, opts.quad).integrate(
+            [_I_1, _I_2], pitch_inv, data, ["|grad(rho)|*kappa_g"], num_well=num_well
         )
         return jnp.sum(
-            safediv(I_1**2, I_2).sum(-1).mean(-2)
-            * data["pitch_inv weight"]
-            / data["pitch_inv"] ** 3,
+            safediv(I_1**2, I_2).sum(-1).mean(-2) * (weight / pitch_inv**3),
             axis=-1,
         )
 
     B0 = data["max_tz |B|"]
     scalar = jnp.pi / (8 * 2**0.5) * data["R0"] ** 2
-
+    out = Bounce1D.batch(
+        foreach_surface,
+        data,
+        grid,
+        names=("|grad(rho)|*kappa_g",),
+        batch_size=opts.surf_batch_size,
+    )
+    assert out.ndim == 1
     data["old effective ripple 3/2"] = (
         (B0 / data["<|grad(rho)|>"]) ** 2
-        * scalar
-        * Bounce1D.batch(
-            eps_32,
-            {"|grad(rho)|*kappa_g": data["|grad(rho)|"] * data["kappa_g"]},
-            data,
-            grid,
-            num_pitch,
-            surf_batch_size,
-            expand_out=True,
-        )
+        * grid.expand(out * scalar)
         / data["fieldline length"]
     )
     return data
@@ -134,15 +118,8 @@ def _epsilon_32_1D(params, transforms, profiles, data, **kwargs):
     data=["old effective ripple 3/2"],
     public=False,
 )
-def _effective_ripple_1D(params, transforms, profiles, data, **kwargs):
-    """Proxy for neoclassical transport in the banana regime.
-
-    A 3D stellarator magnetic field admits ripple wells that lead to enhanced
-    radial drift of trapped particles. In the banana regime, neoclassical (thermal)
-    transport from ripple wells can become the dominant transport channel.
-    The effective ripple (ε) proxy estimates the neoclassical transport
-    coefficients in the banana regime.
-    """
+def _old_effective_ripple(params, transforms, profiles, data, **kwargs):
+    """Proxy for neoclassical transport in the banana regime."""
     data["old effective ripple"] = data["old effective ripple 3/2"] ** (2 / 3)
     return data
 
@@ -171,10 +148,9 @@ def _effective_ripple_1D(params, transforms, profiles, data, **kwargs):
         "b",
         "grad(phi)",
         "grad(psi)",
-        "|grad(psi)|",
+        "|grad(psi)|*kappa_g",
         "|grad(rho)|",
         "|e_alpha|r,p|",
-        "kappa_g",
         "iota_r",
         "fieldline length",
     ]
@@ -184,101 +160,62 @@ def _effective_ripple_1D(params, transforms, profiles, data, **kwargs):
     **_bounce1D_doc,
 )
 @partial(jit, static_argnames=["num_well", "num_quad", "num_pitch", "surf_batch_size"])
-def _Gamma_c_1D(params, transforms, profiles, data, **kwargs):
+def _old_Gamma_c(params, transforms, profiles, data, **kwargs):
     """Fast ion confinement proxy as defined by Nemov et al.
 
-    [1] Poloidal motion of trapped particle orbits in real-space coordinates.
-        V. V. Nemov, S. V. Kasilov, W. Kernbichler, G. O. Leitold.
-        Phys. Plasmas 1 May 2008; 15 (5): 052501.
-        https://doi.org/10.1063/1.2912456.
-        Equation 61.
+    Equation 61 of reference [2]_.
 
-    A 3D stellarator magnetic field admits ripple wells that lead to enhanced
-    radial drift of trapped particles. The energetic particle confinement
-    metric γ_c quantifies whether the contours of the second adiabatic invariant
-    close on the flux surfaces. In the limit where the poloidal drift velocity
-    majorizes the radial drift velocity, the contours lie parallel to flux
-    surfaces. The optimization metric Γ_c averages γ_c² over the distribution
-    of trapped particles on each flux surface.
-
-    The radial electric field has a negligible effect, since fast particles
-    have high energy with collisionless orbits, so it is assumed to be zero.
     """
     # noqa: unused dependency
     grid = transforms["grid"].source_grid
-    num_pitch = kwargs.get("num_pitch", 65)
-    num_well = kwargs.get("num_well", None)
-    surf_batch_size = kwargs.get("surf_batch_size", 1)
-    quad = (
-        kwargs["quad"]
-        if "quad" in kwargs
-        else get_quadrature(
-            leggauss(kwargs.get("num_quad", 32)),
-            (automorphism_sin, grad_automorphism_sin),
-        )
-    )
+    opts = Options.guess(eta=-2, grid=grid, Y_B=grid.num_zeta, **kwargs)
+    num_well = kwargs.get("num_well", -1)
 
-    def Gamma_c(data):
-        bounce = Bounce1D(grid, data, quad, is_reshaped=True)
-        points = bounce.points(data["pitch_inv"], num_well)
-        v_tau, drift1, drift2 = bounce.integrate(
-            [_v_tau, _drift1, _drift2],
-            data["pitch_inv"],
+    def foreach_surface(data):
+        pitch_inv, weight = Bounce1D.pitch_quad(
+            data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
+        )
+        bounce = Bounce1D(grid, data, opts.quad)
+        points = bounce.points(pitch_inv, num_well)
+        v_tau, radial, poloidal = bounce.integrate(
+            [_v_tau, _radial_drift, _vartheta_drift],
+            pitch_inv,
             data,
             ["|grad(psi)|*kappa_g", "|B|_r|v,p", "K"],
             points,
         )
-        # This is γ_c π/2.
-        gamma_c = jnp.arctan(
-            safediv(
-                drift1,
-                drift2
+        return jnp.sum(
+            _reduction_gamma_c(
+                v_tau,
+                radial,
+                poloidal
                 * bounce.interp_to_argmin(data["|grad(rho)|*|e_alpha|r,p|"], points),
             )
-        )
-        return jnp.sum(
-            (v_tau * gamma_c**2).sum(-1).mean(-2)
-            * data["pitch_inv weight"]
-            / data["pitch_inv"] ** 2,
+            * (weight / pitch_inv**2),
             axis=-1,
         )
 
-    fun_data = {
-        "|grad(psi)|*kappa_g": data["|grad(psi)|"] * data["kappa_g"],
-        "|grad(rho)|*|e_alpha|r,p|": data["|grad(rho)|"] * data["|e_alpha|r,p|"],
-        "|B|_r|v,p": data["|B|_r|v,p"],
-        "K": data["iota_r"]
-        * dot(cross(data["grad(psi)"], data["b"]), data["grad(phi)"])
-        - (2 * data["|B|_r|v,p"] - data["|B|"] * data["B^phi_r|v,p"] / data["B^phi"]),
-    }
+    out = Bounce1D.batch(
+        foreach_surface,
+        data,
+        grid,
+        custom_data=_gamma_c_data(data),
+        batch_size=opts.surf_batch_size,
+    )
+    assert out.ndim == 1
     data["old Gamma_c"] = (
-        Bounce1D.batch(
-            Gamma_c,
-            fun_data,
-            data,
-            grid,
-            num_pitch,
-            surf_batch_size,
-            expand_out=True,
-        )
-        / data["fieldline length"]
-        / (2**1.5 * jnp.pi)
+        grid.expand(out * (jnp.pi / 2**3.5)) / data["fieldline length"]
     )
     return data
-
-
-def _poloidal_drift(data, B, pitch):
-    return safediv(
-        data["gbdrift"] * (1 - 0.5 * pitch * B), jnp.sqrt(jnp.abs(1 - pitch * B))
-    )
 
 
 @register_compute_fun(
     name="old Gamma_c Velasco",
     label=(
-        # Γ_c = π/(8√2) ∫ dλ 〈 ∑ⱼ [v τ γ_c²]ⱼ 〉
-        "\\Gamma_c = \\frac{\\pi}{8 \\sqrt{2}} "
-        "\\int d\\lambda \\langle \\sum_j (v \\tau \\gamma_c^2)_j \\rangle"
+        "\\check{\\Gamma}_c = \\frac{1}{2} "
+        "\\left\\langle \\int d\\lambda \\frac{B}{\\sqrt{1 - \\lambda B}} "
+        "\\gamma_c^2"
+        "\\right\\rangle"
     ),
     units="~",
     units_long="None",
@@ -296,64 +233,49 @@ def _poloidal_drift(data, B, pitch):
     **_bounce1D_doc,
 )
 @partial(jit, static_argnames=["num_well", "num_quad", "num_pitch", "surf_batch_size"])
-def _Gamma_c_Velasco_1D(params, transforms, profiles, data, **kwargs):
+def _old_Gamma_c_Velasco(params, transforms, profiles, data, **kwargs):
     """Fast ion confinement proxy as defined by Velasco et al.
 
-    [1] A model for the fast evaluation of prompt losses of energetic ions in
-        stellarators. Equation 16.
-        J.L. Velasco et al. 2021 Nucl. Fusion 61 116059.
-        https://doi.org/10.1088/1741-4326/ac2994.
+    Equation 20 of reference [3]_.
 
-    This expression has a secular term that drives the result to zero as the number
-    of toroidal transits increases if the secular term is not averaged out from the
-    singular integrals. It is observed that this implementation does not average
-    out the secular term. Currently, an optimization using this metric may need
-    to be evaluated by measuring decrease in Γ_c at a fixed number of toroidal
-    transits.
     """
     # noqa: unused dependency
     grid = transforms["grid"].source_grid
-    num_well = kwargs.get("num_well", None)
-    num_pitch = kwargs.get("num_pitch", 65)
-    surf_batch_size = kwargs.get("surf_batch_size", 1)
-    quad = (
-        kwargs["quad"]
-        if "quad" in kwargs
-        else get_quadrature(
-            leggauss(kwargs.get("num_quad", 32)),
-            (automorphism_sin, grad_automorphism_sin),
-        )
-    )
+    opts = Options.guess(eta=-1, grid=grid, Y_B=grid.num_zeta, **kwargs)
+    num_well = kwargs.get("num_well", -1)
 
-    def Gamma_c(data):
-        bounce = Bounce1D(grid, data, quad, is_reshaped=True)
-        v_tau, radial_drift, poloidal_drift = bounce.integrate(
-            [_v_tau, _radial_drift, _poloidal_drift],
-            data["pitch_inv"],
+    def _poloidal_drift_secular_wb_inverse(data, B, pitch):
+        return safediv(
+            data["gbdrift"] * (1 - 0.5 * pitch * B),
+            jnp.sqrt(jnp.abs(1 - pitch * B)),
+        )
+
+    def foreach_surface(data):
+        pitch_inv, weight = Bounce1D.pitch_quad(
+            data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
+        )
+        v_tau, radial, poloidal = Bounce1D(grid, data, opts.quad).integrate(
+            [_v_tau, _radial_drift_wb_inverse, _poloidal_drift_secular_wb_inverse],
+            pitch_inv,
             data,
-            ["cvdrift0", "gbdrift"],
+            names,
             num_well=num_well,
         )
-        # This is γ_c π/2.
-        gamma_c = jnp.arctan(safediv(radial_drift, poloidal_drift))
         return jnp.sum(
-            (v_tau * gamma_c**2).sum(-1).mean(-2)
-            * data["pitch_inv weight"]
-            / data["pitch_inv"] ** 2,
+            _reduction_gamma_c(v_tau, radial, poloidal) * (weight / pitch_inv**2),
             axis=-1,
         )
 
+    names = ("cvdrift0", "gbdrift")
+    out = Bounce1D.batch(
+        foreach_surface,
+        data,
+        grid,
+        names=names,
+        batch_size=opts.surf_batch_size,
+    )
+    assert out.ndim == 1
     data["old Gamma_c Velasco"] = (
-        Bounce1D.batch(
-            Gamma_c,
-            {"cvdrift0": data["cvdrift0"], "gbdrift": data["gbdrift"]},
-            data,
-            grid,
-            num_pitch,
-            surf_batch_size,
-            expand_out=True,
-        )
-        / data["fieldline length"]
-        / (2**1.5 * jnp.pi)
+        grid.expand(out * (jnp.pi**2 / 2**5)) / data["fieldline length"]
     )
     return data
