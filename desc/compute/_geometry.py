@@ -224,6 +224,7 @@ def _compute_A_of_z(grid, data, extrap=False, mean=False, expand_out=False):
     grid_requirement={"sym": False},
 )
 def _A_of_z(params, transforms, profiles, data, **kwargs):
+    assert not transforms["grid"].sym
     # noqa: unused dependency
     data["A(z)"] = _compute_A_of_z(
         transforms["grid"], data, extrap=True, expand_out=True
@@ -272,6 +273,7 @@ def _A(params, transforms, profiles, data, **kwargs):
     grid_requirement={"sym": False},
 )
 def _A_cross_section_surface(params, transforms, profiles, data, **kwargs):
+    assert not transforms["grid"].sym
     # noqa: unused dependency
     data["A"] = _compute_A_of_z(transforms["grid"], data, extrap=True, mean=True)
     return data
@@ -294,6 +296,7 @@ def _A_cross_section_surface(params, transforms, profiles, data, **kwargs):
     grid_requirement={"sym": False},
 )
 def _A_of_z_flux_surface(params, transforms, profiles, data, **kwargs):
+    assert not transforms["grid"].sym
     # noqa: unused dependency
     data["A(z)"] = _compute_A_of_z(
         transforms["grid"], data, extrap=False, expand_out=True
@@ -539,6 +542,7 @@ def _R0_over_a(params, transforms, profiles, data, **kwargs):
     grid_requirement={"sym": False},
 )
 def _perimeter_of_z(params, transforms, profiles, data, **kwargs):
+    assert not transforms["grid"].sym
     max_rho = jnp.max(data["rho"])
     data["perimeter(z)"] = (
         line_integrals(
@@ -572,6 +576,7 @@ def _perimeter_of_z(params, transforms, profiles, data, **kwargs):
     grid_requirement={"sym": False},
 )
 def _perimeter_of_z_flux_surface(params, transforms, profiles, data, **kwargs):
+    assert not transforms["grid"].sym
     max_rho = jnp.max(data["rho"])
     data["perimeter(z)"] = line_integrals(
         transforms["grid"],

@@ -5,7 +5,7 @@ import numpy as np
 from desc.backend import jnp
 from desc.compute import get_profiles, get_transforms
 from desc.compute.utils import _compute as compute_fun
-from desc.grid import LinearGrid
+from desc.grid import LinearGrid, QuadratureGrid
 from desc.utils import ResolutionWarning, Timer, errorif, setdefault, warnif
 
 from .normalization import compute_scaling_factors
@@ -402,6 +402,7 @@ class BallooningStability(_Objective):
 
     _static_attrs = _Objective._static_attrs + [
         "_iota_keys",
+        "_a_keys",
         "_Neigvals",
         "_nturns",
         "_nzetaperturn",
@@ -479,7 +480,8 @@ class BallooningStability(_Objective):
             Level of output.
 
         """
-        self._iota_keys = ["iota", "iota_r", "shear", "a"]
+        self._iota_keys = ["iota", "iota_r", "shear"]
+        self._a_keys = ["a"]
 
         eq = self.things[0]
         iota_grid = LinearGrid(
@@ -492,7 +494,9 @@ class BallooningStability(_Objective):
         )
         assert not iota_grid.axis.size
         self._dim_f = iota_grid.num_rho - self._add_lcfs
-        transforms = get_transforms(self._iota_keys, eq, iota_grid)
+        iota_transforms = get_transforms(self._iota_keys, eq, iota_grid)
+        a_grid = QuadratureGrid(eq.L_grid, eq.M_grid, eq.N_grid, eq.NFP)
+        a_transforms = get_transforms(self._a_keys, eq, a_grid)
         profiles = get_profiles(
             self._iota_keys + ["ideal ballooning lambda"], eq, iota_grid
         )
@@ -508,7 +512,9 @@ class BallooningStability(_Objective):
                 +self._nturns * self._nzetaperturn,
             ),
             "zeta0": self._zeta0,
-            "iota_transforms": transforms,
+            "iota_transforms": iota_transforms,
+            "a_transforms": a_transforms,
+            "a_profiles": get_profiles(self._a_keys, eq, a_grid),
             "profiles": profiles,
             "quad_weights": 1.0,
         }
@@ -541,6 +547,13 @@ class BallooningStability(_Objective):
             constants["iota_transforms"],
             constants["profiles"],
         )
+        a_data = compute_fun(
+            eq,
+            self._a_keys,
+            params,
+            constants["a_transforms"],
+            constants["a_profiles"],
+        )
         iota_grid = constants["iota_transforms"]["grid"]
 
         def get(key):
@@ -564,7 +577,7 @@ class BallooningStability(_Objective):
             if (key != "iota" and key != "a")
         }
         data["iota"] = grid.expand(iota)
-        data["a"] = iota_data["a"]
+        data["a"] = a_data["a"]
         data = compute_fun(
             eq,
             ["ideal ballooning lambda"],
