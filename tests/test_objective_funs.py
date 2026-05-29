@@ -35,14 +35,17 @@ from desc.io import load
 from desc.magnetic_fields import (
     CurrentPotentialField,
     FourierCurrentPotentialField,
+    FreeSurfaceOuterField,
     OmnigenousField,
     PoloidalMagneticField,
+    SourceFreeField,
     SplineMagneticField,
     ToroidalMagneticField,
     VerticalMagneticField,
 )
 from desc.objectives import (
     AspectRatio,
+    AvailableEnergy,
     BallooningStability,
     BootstrapRedlConsistency,
     BoundaryError,
@@ -64,6 +67,7 @@ from desc.objectives import (
     ForceBalanceAnisotropic,
     FusionPower,
     GammaC,
+    GammaLoss,
     GenericObjective,
     HeatingPowerISS04,
     Isodynamicity,
@@ -95,7 +99,7 @@ from desc.objectives import (
     Volume,
     get_NAE_constraints,
 )
-from desc.objectives._free_boundary import BoundaryErrorNESTOR
+from desc.objectives._free_boundary import BoundaryErrorNESTOR, FreeSurfaceError
 from desc.objectives.nae_utils import (
     _calc_1st_order_NAE_coeffs,
     _calc_2nd_order_NAE_coeffs,
@@ -2083,6 +2087,11 @@ class TestObjectiveFunction:
     def test_objective_against_compute_bounce(self):
         """Test objectives are built properly."""
         eq = get("W7-X")
+        eq.pressure = None
+        eq.electron_density = PowerSeriesProfile([1e19, 0, -5e18])
+        eq.electron_temperature = PowerSeriesProfile([1e3, 0, -5e2])
+        eq.ion_temperature = PowerSeriesProfile([1e3, 0, -5e2])
+        eq.atomic_number = 1.0
         rho = np.linspace(0.1, 1, 3)
         obj_grid = LinearGrid(rho=rho, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP, sym=False)
         X = 16
@@ -2112,6 +2121,45 @@ class TestObjectiveFunction:
         np.testing.assert_allclose(
             obj.compute(eq.params_dict), grid.compress(data[names[1]])
         )
+        loss_opts = dict(
+            Y_B=13,
+            num_well=3 * (eq.NFP + 2),
+            num_quad=16,
+            num_pitch=10,
+        )
+        for kind, name in (
+            ("delta", "Gamma_delta"),
+            ("alpha", "Gamma_alpha"),
+        ):
+            obj = GammaLoss(
+                kind, eq, grid=obj_grid, nufft_eps=1e-7, X=X, Y=Y, **loss_opts
+            )
+            obj.build()
+            np.testing.assert_allclose(
+                obj.constants["alpha"], GammaLoss._default_alpha(eq)
+            )
+            assert obj._hyperparam["num_field_periods"] == eq.NFP + 2
+            data = eq.compute(
+                name,
+                grid,
+                angle=angle,
+                alpha=obj.constants["alpha"],
+                quad=obj.constants["quad"],
+                _vander=obj.constants["_vander"],
+                **obj._hyperparam,
+            )
+            np.testing.assert_allclose(
+                obj.compute(eq.params_dict), grid.compress(data[name])
+            )
+        data = eq.compute("available energy", grid, angle=angle, num_energy=8, **opts)
+        obj = AvailableEnergy(
+            eq, grid=obj_grid, nufft_eps=1e-7, X=X, Y=Y, num_energy=8, **opts
+        )
+        obj.build()
+        assert obj._hyperparam["num_well"] == opts["num_well"]
+        np.testing.assert_allclose(
+            obj.compute(eq.params_dict), grid.compress(data["available energy"])
+        )
 
     @pytest.mark.unit
     def test_objective_against_compute_ballooning(self):
@@ -2138,6 +2186,63 @@ class TestObjectiveFunction:
         lam = (lam - lambda0) * (lam >= lambda0)
         lam = w0 * lam.sum(axis=(-1, -2, -3)) + w1 * lam.max(axis=(-1, -2, -3))
         np.testing.assert_allclose(obj.compute(eq.params_dict), lam)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("solve_method", ["fixed_point", "gmres", "least_squares"])
+    def test_objective_against_compute_free_surface_error(self, solve_method):
+        """Test FreeSurfaceError against the underlying |K_vc|^2 compute quantity."""
+        eq = get("W7-X")
+        grid = LinearGrid(rho=np.array([1.0]), M=4, N=4, NFP=eq.NFP, sym=False)
+        B = ToroidalMagneticField(5, 1)
+        field = FreeSurfaceOuterField(eq.surface, M=3, N=3, B_coil=B)
+        obj = FreeSurfaceError(
+            eq,
+            field,
+            grid=grid,
+            eval_grid=grid,
+            solve_method=solve_method,
+        )
+        obj.build(verbose=0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResolutionWarning)
+            inner = eq.compute(
+                obj._inner_keys,
+                grid=grid,
+                params=eq.params_dict,
+                transforms=obj._constants["eq_transforms"],
+                profiles=obj._constants["profiles"],
+                override_grid=False,
+            )
+        field_params = {
+            "R_lmn": eq.params_dict["Rb_lmn"],
+            "Z_lmn": eq.params_dict["Zb_lmn"],
+            "I": inner["I"][grid.unique_rho_idx[-1]],
+            "Y": field.Y,
+        }
+        outer_data = {key: inner[key] for key in obj._reuseable_keys}
+        outer_data["interpolator"] = obj._constants["interpolator"]
+        outer_data["B0*n"] = obj._phi_sec_dot_n(field_params, inner)
+        outer, _ = field.compute(
+            "|K_vc|^2",
+            grid=grid,
+            params=field_params,
+            transforms=obj._constants["eval_transforms"],
+            data=outer_data,
+            override_grid=False,
+            xtol=obj._xtol,
+            maxiter=obj._maxiter,
+            solve_method=solve_method,
+            Phi_0=obj._constants["initial_guess"],
+            chunk_size=obj._chunk_size,
+            B_coil_chunk_size=obj._B_coil_chunk_size,
+            B_coil=B,
+        )
+        expected = (outer["|K_vc|^2"] - inner["|B|^2"] - 2 * mu_0 * inner["p"]) * inner[
+            "|e_theta x e_zeta|"
+        ]
+
+        np.testing.assert_allclose(obj.compute(eq.params_dict), expected)
 
     @pytest.mark.unit
     def test_generic_with_kwargs(self):
@@ -3249,13 +3354,23 @@ def test_loss_function_asserts():
 
 def _reduced_resolution_objective(eq, objective, **kwargs):
     """Speed up testing suite by defining rules to reduce objective resolution."""
-    if objective in {EffectiveRipple, GammaC}:
+    if objective in {AvailableEnergy, EffectiveRipple, GammaC, GammaLoss}:
         kwargs["X"] = 16
         kwargs["Y"] = 24
         kwargs["num_field_periods"] = 10
         kwargs["num_well"] = 15 * kwargs["num_field_periods"] // eq.NFP
         kwargs["num_pitch"] = 24
         kwargs["num_quad"] = 16
+    if objective is GammaLoss:
+        kwargs["num_field_periods"] = eq.NFP + 2
+        kwargs.setdefault("alpha", GammaLoss._default_alpha(eq))
+        kwargs["num_well"] = 15 * kwargs["num_field_periods"] // eq.NFP
+    if objective is AvailableEnergy:
+        kwargs["num_energy"] = 8
+        kwargs.setdefault("Y_B", 16)
+    if objective is GammaLoss:
+        kind = kwargs.pop("kind")
+        return objective(kind, eq=eq, **kwargs)
     return objective(eq=eq, **kwargs)
 
 
@@ -3274,6 +3389,7 @@ class TestComputeScalarResolution:
     ]
     specials = [
         # these require special logic
+        AvailableEnergy,
         BootstrapRedlConsistency,
         BoundaryError,
         CoilArclengthVariance,
@@ -3284,8 +3400,10 @@ class TestComputeScalarResolution:
         CoilSetLinkingNumber,
         CoilSetMinDistance,
         CoilTorsion,
+        FreeSurfaceError,
         FusionPower,
         GenericObjective,
+        GammaLoss,
         HeatingPowerISS04,
         LinkingCurrentConsistency,
         Omnigenity,
@@ -3310,6 +3428,32 @@ class TestComputeScalarResolution:
 
     eq = get("HELIOTRON")
     res_array = np.array([2, 2.5, 3])
+
+    @pytest.mark.regression
+    def test_compute_scalar_resolution_available_energy(self):
+        """AvailableEnergy."""
+        eq = self.eq.copy()
+        eq.pressure = None
+        eq.electron_density = PowerSeriesProfile([1e19, 0, -5e18])
+        eq.electron_temperature = PowerSeriesProfile([1e3, 0, -5e2])
+        eq.ion_temperature = PowerSeriesProfile([1e3, 0, -5e2])
+        eq.atomic_number = 1.0
+        f = np.zeros_like(self.res_array, dtype=float)
+        for i, res in enumerate(self.res_array):
+            grid = LinearGrid(
+                M=int(self.eq.M * res),
+                N=int(self.eq.N * res),
+                NFP=self.eq.NFP,
+                rho=np.array([0.3, 0.7]),
+                sym=False,
+            )
+            obj = ObjectiveFunction(
+                _reduced_resolution_objective(eq, AvailableEnergy, grid=grid),
+                use_jit=False,
+            )
+            obj.build(verbose=0)
+            f[i] = obj.compute_scalar(obj.x())
+        np.testing.assert_allclose(f, f[-1], rtol=1e-1)
 
     @pytest.mark.regression
     def test_compute_scalar_resolution_plasma_vessel(self):
@@ -3454,6 +3598,37 @@ class TestComputeScalarResolution:
             obj = ObjectiveFunction(VacuumBoundaryError(eq, ext_field), use_jit=False)
             with pytest.warns(UserWarning):
                 obj.build(verbose=0)
+            f[i] = obj.compute_scalar(obj.x())
+        np.testing.assert_allclose(f, f[-1], rtol=5e-2)
+
+    @pytest.mark.regression
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_compute_scalar_resolution_free_surface_error(self, flag):
+        """FreeSurfaceError."""
+        pres = PowerSeriesProfile([1.25e-1, 0, -1.25e-1])
+        iota = PowerSeriesProfile([-4.9e-1, 0, 3.0e-1])
+        surf = FourierRZToroidalSurface(
+            R_lmn=[4.0, 1.0],
+            modes_R=[[0, 0], [1, 0]],
+            Z_lmn=[-1.0],
+            modes_Z=[[-1, 0]],
+            NFP=1,
+        )
+        eq = Equilibrium(M=6, N=0, Psi=1.0, surface=surf, pressure=pres, iota=iota)
+
+        f = np.zeros_like(self.res_array, dtype=float)
+        for i, res in enumerate(self.res_array):
+            eq.change_resolution(
+                L_grid=int(eq.L * res), M_grid=int(eq.M * res), N_grid=int(eq.N * res)
+            )
+            B = ToroidalMagneticField(5, 1)
+            field = (
+                FreeSurfaceOuterField(eq.surface, eq.M, eq.N, B_coil=B)
+                if flag
+                else SourceFreeField(eq.surface, eq.M, eq.N, B0=B)
+            )
+            obj = ObjectiveFunction(FreeSurfaceError(eq, field))
+            obj.build()
             f[i] = obj.compute_scalar(obj.x())
         np.testing.assert_allclose(f, f[-1], rtol=5e-2)
 
@@ -3756,7 +3931,7 @@ class TestComputeScalarResolution:
             f[i] = obj.compute_scalar(obj.x())
         np.testing.assert_allclose(f, f[-1], rtol=1e-2, atol=1e-12)
 
-    @pytest.mark.unit
+    @pytest.mark.regression
     def test_compute_scalar_resolution_linking_current(self):
         """LinkingCurrentConsistency."""
         coil = FourierPlanarCoil(center=[10, 1, 0])
@@ -3792,6 +3967,7 @@ class TestObjectiveNaNGrad:
     ]
     specials = [
         # these require special logic
+        AvailableEnergy,
         BallooningStability,
         BootstrapRedlConsistency,
         BoundaryError,
@@ -3805,9 +3981,11 @@ class TestObjectiveNaNGrad:
         CoilTorsion,
         EffectiveRipple,
         ForceBalanceAnisotropic,
+        FreeSurfaceError,
         DeflationOperator,
         FusionPower,
         GammaC,
+        GammaLoss,
         HeatingPowerISS04,
         LinkingCurrentConsistency,
         Omnigenity,
@@ -3826,6 +4004,33 @@ class TestObjectiveNaNGrad:
         ObjectiveFromUser,
     ]
     other_objectives = list(set(objectives) - set(specials))
+
+    @pytest.mark.unit
+    def test_objective_no_nangrad_available_energy(self):
+        """AvailableEnergy."""
+        eq = get("ESTELL")
+        with pytest.warns(UserWarning, match="Reducing radial"):
+            eq.change_resolution(2, 2, 2, 4, 4, 4)
+        eq.pressure = None
+        eq.electron_density = PowerSeriesProfile([1e19, 0, -5e18])
+        eq.electron_temperature = PowerSeriesProfile([1e3, 0, -5e2])
+        eq.ion_temperature = PowerSeriesProfile([1e3, 0, -5e2])
+        eq.atomic_number = 1.0
+
+        obj_0 = ObjectiveFunction(
+            _reduced_resolution_objective(eq, AvailableEnergy, nufft_eps=0)
+        )
+        obj_0.build(verbose=0)
+        g_0 = obj_0.grad(obj_0.x())
+        assert not np.any(np.isnan(g_0))
+
+        obj = ObjectiveFunction(
+            _reduced_resolution_objective(eq, AvailableEnergy, nufft_eps=1e-8)
+        )
+        obj.build(verbose=0)
+        g = obj.grad(obj.x())
+        assert not np.any(np.isnan(g))
+        np.testing.assert_allclose(g, g_0, atol=5e-5)
 
     @pytest.mark.unit
     def test_objective_no_nangrad_plasma_vessel(self):
@@ -3954,6 +4159,30 @@ class TestObjectiveNaNGrad:
         obj.build()
         g = obj.grad(obj.x(eq, ext_field))
         assert not np.any(np.isnan(g)), "boundary error"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_objective_no_nangrad_free_surface_error(self, flag):
+        """FreeSurfaceError."""
+        eq = get("W7-X")
+        B = ToroidalMagneticField(5, 1)
+        field = (
+            FreeSurfaceOuterField(eq.surface, 3, 3, B_coil=B)
+            if flag
+            else SourceFreeField(eq.surface, 3, 3, B0=B)
+        )
+        obj = ObjectiveFunction(
+            FreeSurfaceError(
+                eq,
+                field,
+                eval_grid=LinearGrid(M=2, N=2, NFP=eq.NFP),
+                grid=LinearGrid(M=3, N=3, NFP=eq.NFP),
+                solve_method="fixed_point",
+            )
+        )
+        obj.build()
+        g = obj.grad(obj.x())
+        assert not np.any(np.isnan(g)), "free surface error"
 
     @pytest.mark.unit
     def test_objective_no_nanjac_boundary_error_kinetic_profiles(self):
@@ -4175,23 +4404,30 @@ class TestObjectiveNaNGrad:
         np.testing.assert_allclose(g, g_0, atol=1e-6)
 
     @pytest.mark.unit
-    def test_objective_no_nangrad_Gamma_c(self):
-        """Gamma_c."""
+    @pytest.mark.parametrize(
+        "objective", [GammaC, ("delta", GammaLoss), ("alpha", GammaLoss)]
+    )
+    def test_objective_no_nangrad_fast_ion(self, objective):
+        """Fast ion objectives."""
         eq = get("ESTELL")
         with pytest.warns(UserWarning, match="Reducing radial"):
             eq.change_resolution(2, 2, 2, 4, 4, 4)
+        kind = objective[0] if isinstance(objective, tuple) else None
+        objective = objective[1] if isinstance(objective, tuple) else objective
+        kwargs = {"kind": kind} if kind is not None else {}
         obj_0 = ObjectiveFunction(
-            _reduced_resolution_objective(eq, GammaC, nufft_eps=0)
+            _reduced_resolution_objective(eq, objective, nufft_eps=0, **kwargs)
         )
         obj_0.build(verbose=0)
         g_0 = obj_0.grad(obj_0.x())
         assert not np.any(np.isnan(g_0))
 
-        obj = ObjectiveFunction(_reduced_resolution_objective(eq, GammaC))
+        obj = ObjectiveFunction(_reduced_resolution_objective(eq, objective, **kwargs))
         obj.build(verbose=0)
         g = obj.grad(obj.x())
         assert not np.any(np.isnan(g))
-        np.testing.assert_allclose(g, g_0, atol=2e-5)
+        if objective is GammaC:
+            np.testing.assert_allclose(g, g_0, atol=2e-5)
 
     @pytest.mark.unit
     def test_objective_no_nangrad_ballooning(self):

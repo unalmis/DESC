@@ -26,8 +26,8 @@ from ._equilibrium import (
     HelicalForceBalance,
     RadialForceBalance,
 )
-from ._fast_ion import GammaC
-from ._free_boundary import BoundaryError, VacuumBoundaryError
+from ._fast_ion import GammaC, GammaLoss
+from ._free_boundary import BoundaryError, FreeSurfaceError, VacuumBoundaryError
 from ._generic import (
     DeflationOperator,
     ExternalObjective,
@@ -57,6 +57,7 @@ from ._omnigenity import (
 from ._power_balance import FusionPower, HeatingPowerISS04
 from ._profiles import Pressure, RotationalTransform, Shear, ToroidalCurrent
 from ._stability import BallooningStability, MagneticWell, MercierStability
+from ._turbulence import AvailableEnergy
 from .getters import (
     get_equilibrium_objective,
     get_fixed_axis_constraints,

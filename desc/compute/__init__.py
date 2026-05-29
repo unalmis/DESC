@@ -35,6 +35,7 @@ from . import (
     _fast_ion,
     _field,
     _geometry,
+    _laplace,
     _metric,
     _neoclassical,
     _old,
@@ -42,6 +43,7 @@ from . import (
     _profiles,
     _stability,
     _surface,
+    _turbulence,
 )
 from .data_index import all_kwargs, allowed_kwargs, data_index
 from .utils import (

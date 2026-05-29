@@ -1,11 +1,13 @@
 """Classes for function integration."""
 
+from ._ae_plot import plot_available_energy
 from ._interp_utils import nufft1d2r, nufft2d2r
 from .bounce_integral import Bounce1D, Bounce2D
 from .singularities import (
     DFTInterpolator,
     FFTInterpolator,
     compute_B_plasma,
+    get_interpolator,
     singular_integral,
     virtual_casing_biot_savart,
 )
