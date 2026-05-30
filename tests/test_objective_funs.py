@@ -2114,7 +2114,7 @@ class TestObjectiveFunction:
         obj.build()
         assert obj._hyperparam["num_well"] == opts["num_well"]
         np.testing.assert_allclose(
-            obj.compute(eq.params_dict), grid.compress(data[names[0]]), atol=1e-4
+            obj.compute(eq.params_dict), grid.compress(data[names[0]])
         )
         obj = GammaC(eq, grid=obj_grid, nufft_eps=1e-7, X=X, Y=Y, **opts)
         obj.build()
@@ -2195,7 +2195,7 @@ class TestObjectiveFunction:
         eq = get("W7-X")
         grid = LinearGrid(rho=np.array([1.0]), M=4, N=4, NFP=eq.NFP, sym=False)
         B = ToroidalMagneticField(5, 1)
-        field = FreeSurfaceOuterField(eq.surface, M=3, N=3, B_coil=B)
+        field = FreeSurfaceOuterField(eq.surface, M=grid.M, N=grid.N, B_coil=B)
         obj = FreeSurfaceError(
             eq,
             field,
@@ -2251,7 +2251,7 @@ class TestObjectiveFunction:
         eq = get("W7-X")
         grid = LinearGrid(rho=np.array([1.0]), M=2, N=2, NFP=eq.NFP, sym=False)
         field = FreeSurfaceOuterField(
-            eq.surface, M=1, N=1, B_coil=ToroidalMagneticField(5, 1)
+            eq.surface, M=grid.M, N=grid.N, B_coil=ToroidalMagneticField(5, 1)
         )
         obj = ObjectiveFunction(
             FreeSurfaceError(
