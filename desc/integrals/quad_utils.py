@@ -584,7 +584,7 @@ def _periodic_voronoi_widths(alpha, valid, period=2 * jnp.pi):
     dist = jnp.where(
         valid[..., :, None] & valid[..., None, :] & (dist > 0), dist, jnp.inf
     )
-    has_neighbors = valid.sum(-1, keepdims=True) > 1
+    has_neighbors = valid & (valid.sum(-1, keepdims=True) > 1)
     prev_width = jnp.where(has_neighbors, dist.min(-2), period)
     next_width = jnp.where(has_neighbors, dist.min(-1), period)
     width = 0.5 * (prev_width + next_width)
@@ -633,6 +633,7 @@ class _LossCone:
         previous = jnp.take_along_axis(score, prev_idx, axis=-1)
         has_previous = jnp.isfinite(prev_dist)
         event = valid & has_previous & (score > 0) & (previous <= 0)
+        prev_dist = jnp.where(has_previous, prev_dist, 0.0)
         offset = jnp.where(
             has_previous, safediv(prev_dist * score, score - previous), 0.0
         )
