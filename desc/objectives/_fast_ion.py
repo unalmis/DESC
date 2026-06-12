@@ -4,9 +4,9 @@ from desc.backend import jnp
 from desc.compute.utils import _compute as compute_fun
 from desc.integrals._interp_utils import check_nufft
 from desc.integrals.bounce_integral import Options
+from desc.utils import errorif
 
 from .objective_funs import _Objective, collect_docs, doc_bounce
-from .utils import errorif
 
 
 class GammaC(_Objective):
@@ -37,7 +37,7 @@ class GammaC(_Objective):
            https://doi.org/10.1088/1741-4326/ac2994.
     .. [3] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. https://doi:10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
 
     """
 
@@ -98,11 +98,13 @@ class GammaC(_Objective):
         spline=True,
         Nemov=True,
         shard_input_data=False,
+        **kwargs,
     ):
         errorif(
             deriv_mode == "fwd",
             ValueError,
-            "Reverse mode should be used for the objective: GammaC.",
+            "Reverse mode recommended for the objective: GammaC.\n"
+            "Make an issue if you need forward mode.",
         )
         nufft_eps = check_nufft(nufft_eps)
 
@@ -203,7 +205,7 @@ class GammaLoss(_Objective):
            https://doi.org/10.1088/1741-4326/ac2994.
     .. [2] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. https://doi:10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
 
     """
 
@@ -282,7 +284,8 @@ class GammaLoss(_Objective):
         errorif(
             deriv_mode == "fwd",
             ValueError,
-            "Reverse mode should be used for the objective: GammaLoss.",
+            "Reverse mode recommended for the objective: GammaLoss.\n"
+            "Make an issue if you need forward mode.",
         )
         nufft_eps = check_nufft(nufft_eps)
 
