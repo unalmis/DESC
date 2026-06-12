@@ -4,9 +4,9 @@ from desc.backend import jnp
 from desc.compute.utils import _compute as compute_fun
 from desc.integrals._interp_utils import check_nufft
 from desc.integrals.bounce_integral import Options
+from desc.utils import errorif
 
 from .objective_funs import _Objective, collect_docs, doc_bounce
-from .utils import errorif
 
 
 class EffectiveRipple(_Objective):
@@ -29,7 +29,7 @@ class EffectiveRipple(_Objective):
            https://doi.org/10.1063/1.873749.
     .. [2] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. https://doi:10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
 
     """
 
@@ -78,11 +78,13 @@ class EffectiveRipple(_Objective):
         nufft_eps=1e-6,
         spline=True,
         shard_input_data=False,
+        **kwargs,
     ):
         errorif(
             deriv_mode == "fwd",
             ValueError,
-            "Reverse mode should be used for the objective: EffectiveRipple.",
+            "Reverse mode recommended for the objective: EffectiveRipple.\n"
+            "Make an issue if you need forward mode.",
         )
         nufft_eps = check_nufft(nufft_eps)
 

@@ -180,7 +180,7 @@ class Bounce2D(_Bounce):
     ----------
     .. [1] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. https://doi:10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
 
     Examples
     --------
