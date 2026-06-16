@@ -158,14 +158,6 @@ class _Bounce(eqx.Module, ABC):
         """Plot B and bounce points on the specified field line."""
 
 
-def _fft_then_fun(fun, data):
-    data = {
-        k: Bounce2D.fourier(v) if (k != "angle" and v.ndim > 1) else v
-        for k, v in data.items()
-    }
-    return fun(data)
-
-
 class Bounce2D(_Bounce):
     """Computes bounce integrals using pseudo-spectral methods.
 
@@ -1309,6 +1301,14 @@ class Bounce2D(_Bounce):
 
 def _fourier_if_real(thing):
     return Bounce2D.fourier(thing) if jnp.isrealobj(thing) else thing
+
+
+def _fft_then_fun(fun, data):
+    data = {
+        k: Bounce2D.fourier(v) if (k != "angle" and v.ndim > 1) else v
+        for k, v in data.items()
+    }
+    return fun(data)
 
 
 class Bounce1D(_Bounce):
