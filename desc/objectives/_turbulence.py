@@ -35,15 +35,20 @@ class AvailableEnergy(_Objective):
         __doc__.rstrip()
         + doc_bounce
         + """
-    num_energy : int
-        Resolution for generalized Laguerre quadrature over energy.
-        Default is 16.
     radial_scale : float
         Multiplier for the radial correlation length.
         Default is 1.0.
     binormal_scale : float
         Multiplier for the binormal correlation length.
         Default is 1.0.
+    quad_abs_err : float or False
+        Absolute tolerance for adaptive energy quadrature.
+        If False, then this is interpreted as a flag to use a fixed quadrature,
+        which is faster, but less accurate.
+        Default is 1e-6.
+    quad_rel_err : float
+        Relative tolerance for adaptive energy quadrature.
+        Default is 1e-6.
         """.rstrip()
         + collect_docs(
             target_default="``target=0``.",
@@ -86,9 +91,10 @@ class AvailableEnergy(_Objective):
         surf_batch_size=1,
         nufft_eps=1e-7,
         spline=True,
-        num_energy=16,
         radial_scale=1.0,
         binormal_scale=1.0,
+        quad_abs_err=1e-6,
+        quad_rel_err=1e-6,
     ):
         errorif(
             deriv_mode == "fwd",
@@ -117,9 +123,10 @@ class AvailableEnergy(_Objective):
             "surf_batch_size": surf_batch_size,
             "nufft_eps": nufft_eps,
             "spline": spline,
-            "num_energy": num_energy,
             "radial_scale": radial_scale,
             "binormal_scale": binormal_scale,
+            "quad_abs_err": quad_abs_err,
+            "quad_rel_err": quad_rel_err,
         }
 
         super().__init__(
@@ -147,9 +154,8 @@ class AvailableEnergy(_Objective):
 
         """
         Options._build_objective(self, "available energy", eta=-1)
-        self._constants["energy_quad"] = _energy_quad(
-            self._hyperparam.pop("num_energy")
-        )
+        if not self._hyperparam["quad_abs_err"]:
+            self._constants["energy_quad"] = _energy_quad(32)
         super().build(use_jit=use_jit, verbose=verbose)
 
     def compute(self, params, constants=None):
