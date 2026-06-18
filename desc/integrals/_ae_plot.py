@@ -9,6 +9,7 @@ from interpax import PPoly
 from interpax_fft import PiecewiseChebyshevSeries
 from matplotlib.collections import LineCollection
 from matplotlib.ticker import MaxNLocator
+from quadax import quadgk
 
 from desc.backend import jnp
 from desc.grid import LinearGrid
@@ -158,7 +159,8 @@ def _ae_well_data(
     binormal_scale=1.0,
     density_gradient=None,
     temperature_gradient=None,
-    num_energy=16,
+    quad_abs_err=1e-6,
+    quad_rel_err=1e-6,
     num_zeta=2000,
     **kwargs,
 ):
@@ -185,8 +187,8 @@ def _ae_well_data(
     density_gradient, temperature_gradient : float or ndarray, optional
         Values replacing ``ne_r / ne`` and ``Te_r / Te`` before multiplication
         by ``radial_scale``. If omitted, the equilibrium profiles are used.
-    num_energy : int, optional
-        Number of generalized Gauss-Laguerre nodes for the energy integral.
+    quad_abs_err, quad_rel_err : float, optional
+        Tolerances for adaptive energy quadrature.
     num_zeta : int, optional
         Number of points used to plot ``|B|`` along the field line.
     **kwargs
@@ -199,7 +201,7 @@ def _ae_well_data(
         field line.
     """
     from desc.compute._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
-    from desc.compute._turbulence import _ae, _energy_quad
+    from desc.compute._turbulence import _ae_1, _ae_2
 
     bounce_names = (
         "cvdrift (periodic)",
@@ -281,11 +283,13 @@ def _ae_well_data(
         loop=opts.loop,
     )
 
-    energy, energy_weight = _energy_quad(num_energy)
-    ae_per_pitch_well = jnp.sum(
-        _ae(G, G_ω_α, G_ω_ψ, fun_data, energy) * energy_weight[..., None],
-        axis=-2,
-    )
+    ae_data = _ae_1(G, G_ω_α, G_ω_ψ, fun_data)
+    ae_per_pitch_well = quadgk(
+        lambda energy: (energy**1.5 * jnp.exp(-energy)) * _ae_2(*ae_data, energy),
+        jnp.array([0.0, jnp.inf]),
+        epsabs=quad_abs_err,
+        epsrel=quad_rel_err,
+    )[0].squeeze(-2)
 
     shape = (-1,) + (1,) * (G.ndim - 1)
     G_ω_α = G_ω_α * fun_data["ae psi width"].reshape(shape)
@@ -410,7 +414,8 @@ def _add_well_segments(
         cmap=cmap,
         norm=_color_norm(norm, values, vmin, vmax),
         linewidths=initial_linewidth,
-        alpha=0.95,
+        antialiaseds=False,
+        alpha=1.0,
         zorder=1,
     )
     ax.add_collection(collection)

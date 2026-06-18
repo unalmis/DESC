@@ -18,17 +18,18 @@ import numpy as np
 from jax.lax import stop_gradient
 from orthax import orthgauss
 from orthax.recurrence import GeneralizedLaguerre
+from quadax import quadgk
 
 from desc.backend import jit, jnp
 
-from ..batching import batch_map
 from ..integrals.bounce_integral import Bounce2D, Options
-from ..utils import safediv
+from ..utils import safediv, warnif
 from ._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
 from .data_index import register_compute_fun
 
 
-def _ae(G, G_ω_α, G_ω_ψ, data, energy):
+def _ae_1(G, G_ω_α, G_ω_ψ, data):
+    """Compute energy-independent inputs for AE."""
     shape = (-1,) + (1,) * G.ndim
 
     G = G[..., None, :]  # This is sqrt G hat.
@@ -38,12 +39,24 @@ def _ae(G, G_ω_α, G_ω_ψ, data, energy):
     η_n = data["ae grad(density)"].reshape(shape)
     η_T = data["ae grad(temperature)"].reshape(shape)
     C = η_n - 1.5 * η_T
-    energy = energy[..., None]
 
     drift = jnp.hypot(G_ω_α, G_ω_ψ)
-    drive = jnp.hypot(G * (η_T + C / energy) - G_ω_α, G_ω_ψ)
+    return G, G_ω_α, G_ω_ψ, η_T, C, drift
 
+
+def _ae_2(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy):
+    """Evaluate the local AE kernel at fixed energy."""
+    energy = energy[..., None]
+    drive = jnp.hypot(G * (η_T + safediv(C, energy)) - G_ω_α, G_ω_ψ)
     return G_ω_α * C + (G_ω_α * η_T + safediv(drift * (drive - drift), G)) * energy
+
+
+def _ae_E(G, G_ω_α, G_ω_ψ, η_T, C, drift, pitch_weight, energy):
+    """Reduce the local AE kernel over wells, field lines, and pitch angles."""
+    return (
+        pitch_weight[..., None]
+        * _ae_2(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy).sum(-1).mean(-3)
+    ).sum(-2)
 
 
 def _energy_quad(num_energy):
@@ -83,13 +96,18 @@ def _energy_quad(num_energy):
     grid_requirement={"can_fft2": True},
     radial_scale="float : Multiplier for the radial correlation length.",
     binormal_scale="float : Multiplier for the binormal correlation length.",
-    num_energy="int : Resolution for generalized Laguerre quadrature over energy.",
-    energy_quad="tuple : Nodes and weights for the energy quadrature.",
+    quad_abs_err=(
+        "float : Absolute tolerance for adaptive energy quadrature. "
+        "If False, then this is interpreted as a flag to use a fixed quadrature, "
+        "which is faster, but less accurate."
+    ),
+    quad_rel_err="float : Relative tolerance for adaptive energy quadrature.",
+    energy_quad="tuple : Optional nodes and weights for fixed energy quadrature.",
     **Options._doc,
 )
 @partial(
     jit,
-    static_argnames=Options._static_argnames + ("num_energy",),
+    static_argnames=Options._static_argnames + ("quad_abs_err", "quad_rel_err"),
 )
 def _available_energy(params, transforms, profiles, data, **kwargs):
     """Dimensionless available energy of trapped electrons [2]_.
@@ -97,51 +115,58 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
     Parameters
     ----------
     radial_scale, binormal_scale : float
-        Correlation-length multipliers. Default is 1.
-    num_energy : int
-        Resolution for generalized Gauss-Laguerre quadrature over energy.
+        Correlation-length multipliers. Default is 1.0.
+    quad_abs_err, quad_rel_err : float or bool
+        Tolerances for the adaptive energy quadrature. If ``quad_abs_err`` is
+        False, then this is interpreted as a flag to use a fixed quadrature,
+        which is faster, but less accurate.
+        Default is 1e-6.
 
     """
     # noqa: unused dependency
+    warnif(
+        kwargs.get("pitch_batch_size", None) is not None,
+        msg="pitch_batch_size is currently ignored by available energy.",
+    )
+
     radial_scale = kwargs.get("radial_scale", 1.0)
     binormal_scale = kwargs.get("binormal_scale", 1.0)
+    abs_err = kwargs.get("quad_abs_err", 1e-6)
+    rel_err = kwargs.get("quad_rel_err", 1e-6)
     energy_quad = kwargs.get("energy_quad", None)
-    if energy_quad is None:
-        energy_quad = _energy_quad(kwargs.get("num_energy", 16))
+    if not abs_err and energy_quad is None:
+        energy_quad = _energy_quad(32)
 
     grid = transforms["grid"]
     opts = Options.guess(-1, grid, **kwargs)
 
     def foreach_surface(data):
-
-        def foreach(pitch_inv):
-            return (
-                _ae(
-                    *bounce.integrate(
-                        [_sqrt_G_hat, _binormal_drift, _radial_drift],
-                        pitch_inv,
-                        data,
-                        names,
-                        num_well=opts.num_well,
-                        loop=opts.loop,
-                    ),
-                    data,
-                    energy_quad[0],
-                )
-                .sum(-1)
-                .mean(-3)
-                .dot(energy_quad[1])
-            )
-
         pitch_inv, weight = Bounce2D.pitch_quad(
             data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
         )
-        bounce = Bounce2D(grid, data, data["angle"], **opts)
-        return jnp.sum(
-            batch_map(foreach, pitch_inv, opts.pitch_batch_size)
-            * (weight / pitch_inv**2),
-            axis=-1,
+        weight /= pitch_inv**2
+        G, G_ω_α, G_ω_ψ = Bounce2D(grid, data, data["angle"], **opts).integrate(
+            [_sqrt_G_hat, _binormal_drift, _radial_drift],
+            pitch_inv,
+            data,
+            names,
+            num_well=opts.num_well,
+            loop=opts.loop,
         )
+
+        G, G_ω_α, G_ω_ψ, η_T, C, drift = _ae_1(G, G_ω_α, G_ω_ψ, data)
+        if energy_quad is not None:
+            return _ae_E(G, G_ω_α, G_ω_ψ, η_T, C, drift, weight, energy_quad[0]).dot(
+                energy_quad[1]
+            )
+
+        return quadgk(
+            lambda energy: (energy**1.5 * jnp.exp(-energy))
+            * _ae_E(G, G_ω_α, G_ω_ψ, η_T, C, drift, weight, energy),
+            jnp.array([0.0, jnp.inf]),
+            epsabs=abs_err,
+            epsrel=rel_err,
+        )[0].squeeze()
 
     names = (
         "cvdrift (periodic)",
