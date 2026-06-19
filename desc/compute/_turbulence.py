@@ -28,8 +28,36 @@ from ._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
 from .data_index import register_compute_fun
 
 
-def _ae_1(G, G_ω_α, G_ω_ψ, data):
-    """Compute energy-independent inputs for AE."""
+def _ae_precompute(G, G_ω_α, G_ω_ψ, data):
+    """Compute energy-independent inputs for AE.
+
+    Parameters
+    ----------
+    G, G_ω_α, G_ω_ψ : jnp.ndarray
+        Shape (..., num alpha, num pitch, num well),
+        where the ... indicates a potential leading axis of size num rho.
+        Bounce integral of ``sqrt(G)_hat``, ``binormal_drift``, and ``radial_drift``,
+        respectively.
+    data : dict[str, jnp.ndarray]
+        Surface data containing conjugate widths of ae psi width, ae alpha width,
+        ae grad(density), and ae grad(temperature).
+
+    Returns
+    -------
+    G, G_ω_α, G_ω_ψ, η_T, C, drift : jnp.ndarray
+        Energy-independent, scaled quantities that may be given to ``_ae_kernel``.
+
+        The shapes of ``G``, ``G_ω_α``, ``G_ω_ψ``, and ``drift`` are
+        (..., num alpha, num pitch, 1, num well).
+        The shapes of ``η_T`` and ``C`` are
+        (..., 1, 1, 1, 1),
+        where the ... indicates a potential leading axis of size num rho.
+
+        ``G_ω_α`` and ``G_ω_ψ`` are scaled by their conjugate widths.
+        Here, ``η_T`` is the temperature-gradient drive,
+        ``C=η_n-3η_T/2``, and ``drift=hypot(G_ω_α,G_ω_ψ)``.
+
+    """
     shape = (-1,) + (1,) * G.ndim
 
     G = G[..., None, :]  # This is sqrt G hat.
@@ -44,18 +72,74 @@ def _ae_1(G, G_ω_α, G_ω_ψ, data):
     return G, G_ω_α, G_ω_ψ, η_T, C, drift
 
 
-def _ae_2(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy):
-    """Evaluate the local AE kernel at fixed energy."""
+def _ae_kernel(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy):
+    """Compute the local AE kernel at the given energy.
+
+    Parameters
+    ----------
+    G, G_ω_α, G_ω_ψ, η_T, C, drift : jnp.ndarray
+        Energy-independent, scaled quantities returned by ``_ae_precompute``.
+
+        The shapes of ``G``, ``G_ω_α``, ``G_ω_ψ``, and ``drift`` are
+        (..., num alpha, num pitch, 1, num well).
+        The shapes of ``η_T`` and ``C`` are
+        (..., 1, 1, 1, 1),
+        where the ... indicates a potential leading axis of size num rho.
+
+        ``G_ω_α`` and ``G_ω_ψ`` are scaled by their conjugate widths.
+        Here, ``η_T`` is the temperature-gradient drive,
+        ``C=η_n-3η_T/2``, and ``drift=hypot(G_ω_α,G_ω_ψ)``.
+    energy : jnp.ndarray
+        Shape (num energy, ).
+        Normalized particle energy.
+
+    Returns
+    -------
+    output : jnp.ndarray
+        Shape (..., num alpha, num pitch, num energy, num well),
+        where the ... indicates a potential leading axis of size num rho.
+
+    """
     energy = energy[..., None]
     drive = jnp.hypot(G * (η_T + safediv(C, energy)) - G_ω_α, G_ω_ψ)
     return G_ω_α * C + (G_ω_α * η_T + safediv(drift * (drive - drift), G)) * energy
 
 
-def _ae_E(G, G_ω_α, G_ω_ψ, η_T, C, drift, pitch_weight, energy):
-    """Reduce the local AE kernel over wells, field lines, and pitch angles."""
+def _ae_reduce(G, G_ω_α, G_ω_ψ, η_T, C, drift, pitch_weight, energy):
+    """Reduce the local AE kernel over wells, field lines, and pitch angles.
+
+    Parameters
+    ----------
+    G, G_ω_α, G_ω_ψ, η_T, C, drift : jnp.ndarray
+        Energy-independent, scaled quantities returned by ``_ae_precompute``.
+
+        The shapes of ``G``, ``G_ω_α``, ``G_ω_ψ``, and ``drift`` are
+        (..., num alpha, num pitch, 1, num well).
+        The shapes of ``η_T`` and ``C`` are
+        (..., 1, 1, 1, 1),
+        where the ... indicates a potential leading axis of size num rho.
+
+        ``G_ω_α`` and ``G_ω_ψ`` are scaled by their conjugate widths.
+        Here, ``η_T`` is the temperature-gradient drive,
+        ``C=η_n-3η_T/2``, and ``drift=hypot(G_ω_α,G_ω_ψ)``.
+    pitch_weight : jnp.ndarray
+        Shape (..., num pitch),
+        where the ... indicates a potential leading axis of size num rho.
+        Pitch quadrature weights divided by ``pitch_inv**2``.
+    energy : jnp.ndarray
+        Shape (num energy, ).
+        Normalized particle energy.
+
+    Returns
+    -------
+    output : jnp.ndarray
+        Shape (..., num energy),
+        where the ... indicates a potential leading axis of size num rho.
+
+    """
     return (
         pitch_weight[..., None]
-        * _ae_2(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy).sum(-1).mean(-3)
+        * _ae_kernel(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy).sum(-1).mean(-3)
     ).sum(-2)
 
 
@@ -96,18 +180,18 @@ def _energy_quad(num_energy):
     grid_requirement={"can_fft2": True},
     radial_scale="float : Multiplier for the radial correlation length.",
     binormal_scale="float : Multiplier for the binormal correlation length.",
-    quad_abs_err=(
+    quad_atol=(
         "float : Absolute tolerance for adaptive energy quadrature. "
         "If False, then this is interpreted as a flag to use a fixed quadrature, "
         "which is faster, but less accurate."
     ),
-    quad_rel_err="float : Relative tolerance for adaptive energy quadrature.",
+    quad_rtol="float : Relative tolerance for adaptive energy quadrature.",
     energy_quad="tuple : Optional nodes and weights for fixed energy quadrature.",
     **Options._doc,
 )
 @partial(
     jit,
-    static_argnames=Options._static_argnames + ("quad_abs_err", "quad_rel_err"),
+    static_argnames=Options._static_argnames + ("quad_atol", "quad_rtol"),
 )
 def _available_energy(params, transforms, profiles, data, **kwargs):
     """Dimensionless available energy of trapped electrons [2]_.
@@ -116,8 +200,8 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
     ----------
     radial_scale, binormal_scale : float
         Correlation-length multipliers. Default is 1.0.
-    quad_abs_err, quad_rel_err : float or bool
-        Tolerances for the adaptive energy quadrature. If ``quad_abs_err`` is
+    quad_atol, quad_rtol : float or bool
+        Tolerances for the adaptive energy quadrature. If ``quad_atol`` is
         False, then this is interpreted as a flag to use a fixed quadrature,
         which is faster, but less accurate.
         Default is 1e-6.
@@ -126,15 +210,16 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
     warnif(
         kwargs.get("pitch_batch_size", None) is not None,
-        msg="pitch_batch_size is currently ignored by available energy.",
+        msg="The option pitch_batch_size is ignored by available energy.\n"
+        "Make an issue to request for this feature if memory usage is too high.\n",
     )
 
     radial_scale = kwargs.get("radial_scale", 1.0)
     binormal_scale = kwargs.get("binormal_scale", 1.0)
-    abs_err = kwargs.get("quad_abs_err", 1e-6)
-    rel_err = kwargs.get("quad_rel_err", 1e-6)
+    atol = kwargs.get("quad_atol", 1e-6)
+    rtol = kwargs.get("quad_rtol", 1e-6)
     energy_quad = kwargs.get("energy_quad", None)
-    if not abs_err and energy_quad is None:
+    if not atol and energy_quad is None:
         energy_quad = _energy_quad(32)
 
     grid = transforms["grid"]
@@ -145,7 +230,7 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
             data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
         )
         weight /= pitch_inv**2
-        G, G_ω_α, G_ω_ψ = Bounce2D(grid, data, data["angle"], **opts).integrate(
+        ae_data = Bounce2D(grid, data, data["angle"], **opts).integrate(
             [_sqrt_G_hat, _binormal_drift, _radial_drift],
             pitch_inv,
             data,
@@ -153,20 +238,18 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
             num_well=opts.num_well,
             loop=opts.loop,
         )
+        ae_data = _ae_precompute(*ae_data, data)
 
-        G, G_ω_α, G_ω_ψ, η_T, C, drift = _ae_1(G, G_ω_α, G_ω_ψ, data)
         if energy_quad is not None:
-            return _ae_E(G, G_ω_α, G_ω_ψ, η_T, C, drift, weight, energy_quad[0]).dot(
-                energy_quad[1]
-            )
+            return _ae_reduce(*ae_data, weight, energy_quad[0]).dot(energy_quad[1])
 
         return quadgk(
             lambda energy: (energy**1.5 * jnp.exp(-energy))
-            * _ae_E(G, G_ω_α, G_ω_ψ, η_T, C, drift, weight, energy),
+            * _ae_reduce(*ae_data, weight, energy).squeeze(-1),
             jnp.array([0.0, jnp.inf]),
-            epsabs=abs_err,
-            epsrel=rel_err,
-        )[0].squeeze()
+            epsabs=atol,
+            epsrel=rtol,
+        )[0]
 
     names = (
         "cvdrift (periodic)",

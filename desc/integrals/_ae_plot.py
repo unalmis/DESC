@@ -159,8 +159,8 @@ def _ae_well_data(
     binormal_scale=1.0,
     density_gradient=None,
     temperature_gradient=None,
-    quad_abs_err=1e-6,
-    quad_rel_err=1e-6,
+    quad_atol=1e-6,
+    quad_rtol=1e-6,
     num_zeta=2000,
     **kwargs,
 ):
@@ -187,7 +187,7 @@ def _ae_well_data(
     density_gradient, temperature_gradient : float or ndarray, optional
         Values replacing ``ne_r / ne`` and ``Te_r / Te`` before multiplication
         by ``radial_scale``. If omitted, the equilibrium profiles are used.
-    quad_abs_err, quad_rel_err : float, optional
+    quad_atol, quad_rtol : float, optional
         Tolerances for adaptive energy quadrature.
     num_zeta : int, optional
         Number of points used to plot ``|B|`` along the field line.
@@ -201,7 +201,7 @@ def _ae_well_data(
         field line.
     """
     from desc.compute._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
-    from desc.compute._turbulence import _ae_1, _ae_2
+    from desc.compute._turbulence import _ae_kernel, _ae_precompute
 
     bounce_names = (
         "cvdrift (periodic)",
@@ -274,7 +274,7 @@ def _ae_well_data(
         fun_data["min_tz |B|"], fun_data["max_tz |B|"], opts.pitch_quad
     )
     points = bounce.points(pitch_inv, opts.num_well)
-    G, G_ω_α, G_ω_ψ = bounce.integrate(
+    bounce_data = bounce.integrate(
         [_sqrt_G_hat, _binormal_drift, _radial_drift],
         pitch_inv,
         fun_data,
@@ -283,14 +283,16 @@ def _ae_well_data(
         loop=opts.loop,
     )
 
-    ae_data = _ae_1(G, G_ω_α, G_ω_ψ, fun_data)
+    ae_data = _ae_precompute(*bounce_data, fun_data)
     ae_per_pitch_well = quadgk(
-        lambda energy: (energy**1.5 * jnp.exp(-energy)) * _ae_2(*ae_data, energy),
+        lambda energy: (energy**1.5 * jnp.exp(-energy))
+        * _ae_kernel(*ae_data, energy).squeeze(-2),
         jnp.array([0.0, jnp.inf]),
-        epsabs=quad_abs_err,
-        epsrel=quad_rel_err,
-    )[0].squeeze(-2)
+        epsabs=quad_atol,
+        epsrel=quad_rtol,
+    )[0]
 
+    G, G_ω_α, G_ω_ψ = bounce_data
     shape = (-1,) + (1,) * (G.ndim - 1)
     G_ω_α = G_ω_α * fun_data["ae psi width"].reshape(shape)
     G_ω_ψ = G_ω_ψ * fun_data["ae alpha width"].reshape(shape)

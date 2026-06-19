@@ -420,7 +420,7 @@ class Bounce2D(_Bounce):
         sparse : bool
             Whether to use sparsity preserving pullbacks.
             Default is ``True``, which makes the most sense if the output has
-            shape (num_rho, ). Otherwise, if the output shape is larger, and
+            shape (num rho, ). Otherwise, if the output shape is larger, and
             the final objective of interest is a lower dimensional quantity
             than the output, it may be preferable to delay the vjp
             by setting to ``False``.
@@ -1484,7 +1484,7 @@ class Bounce1D(_Bounce):
         sparse : bool
             Whether to use sparsity preserving pullbacks.
             Default is ``True``, which makes the most sense if the output has
-            shape (num_rho, ). Otherwise, if the output shape is larger, and
+            shape (num rho, ). Otherwise, if the output shape is larger, and
             the final objective of interest is a lower dimensional quantity
             than the output, it may be preferable to delay the vjp
             by setting to ``False``.

@@ -41,12 +41,12 @@ class AvailableEnergy(_Objective):
     binormal_scale : float
         Multiplier for the binormal correlation length.
         Default is 1.0.
-    quad_abs_err : float or False
+    quad_atol : float or False
         Absolute tolerance for adaptive energy quadrature.
         If False, then this is interpreted as a flag to use a fixed quadrature,
         which is faster, but less accurate.
         Default is 1e-6.
-    quad_rel_err : float
+    quad_rtol : float
         Relative tolerance for adaptive energy quadrature.
         Default is 1e-6.
         """.rstrip()
@@ -93,8 +93,8 @@ class AvailableEnergy(_Objective):
         spline=True,
         radial_scale=1.0,
         binormal_scale=1.0,
-        quad_abs_err=1e-6,
-        quad_rel_err=1e-6,
+        quad_atol=1e-6,
+        quad_rtol=1e-6,
     ):
         errorif(
             deriv_mode == "fwd",
@@ -125,8 +125,8 @@ class AvailableEnergy(_Objective):
             "spline": spline,
             "radial_scale": radial_scale,
             "binormal_scale": binormal_scale,
-            "quad_abs_err": quad_abs_err,
-            "quad_rel_err": quad_rel_err,
+            "quad_atol": quad_atol,
+            "quad_rtol": quad_rtol,
         }
 
         super().__init__(
@@ -154,7 +154,7 @@ class AvailableEnergy(_Objective):
 
         """
         Options._build_objective(self, "available energy", eta=-1)
-        if not self._hyperparam["quad_abs_err"]:
+        if not self._hyperparam["quad_atol"]:
             self._constants["energy_quad"] = _energy_quad(32)
         super().build(use_jit=use_jit, verbose=verbose)
 

@@ -2156,7 +2156,7 @@ class TestObjectiveFunction:
             "available energy",
             grid,
             angle=angle,
-            quad_abs_err=False,
+            quad_atol=False,
             **opts,
         )
         obj = AvailableEnergy(
@@ -2165,12 +2165,12 @@ class TestObjectiveFunction:
             nufft_eps=1e-7,
             X=X,
             Y=Y,
-            quad_abs_err=False,
+            quad_atol=False,
             **opts,
         )
         obj.build()
         assert obj._hyperparam["num_well"] == opts["num_well"]
-        assert obj._hyperparam["quad_abs_err"] is False
+        assert not obj._hyperparam["quad_atol"]
         assert "energy_quad" in obj._constants
         np.testing.assert_allclose(
             obj.compute(eq.params_dict), grid.compress(data["available energy"])
@@ -2179,8 +2179,8 @@ class TestObjectiveFunction:
             "available energy",
             grid,
             angle=angle,
-            quad_abs_err=1e-3,
-            quad_rel_err=1e-3,
+            quad_atol=1e-3,
+            quad_rtol=1e-3,
             **opts,
         )
         obj = AvailableEnergy(
@@ -2189,12 +2189,12 @@ class TestObjectiveFunction:
             nufft_eps=1e-7,
             X=X,
             Y=Y,
-            quad_abs_err=1e-3,
-            quad_rel_err=1e-3,
+            quad_atol=1e-3,
+            quad_rtol=1e-3,
             **opts,
         )
         obj.build()
-        assert obj._hyperparam["quad_abs_err"] == 1e-3
+        assert obj._hyperparam["quad_atol"] == 1e-3
         assert "energy_quad" not in obj._constants
         np.testing.assert_allclose(
             obj.compute(eq.params_dict), grid.compress(data["available energy"])
@@ -3458,8 +3458,8 @@ def _reduced_resolution_objective(eq, objective, **kwargs):
         kwargs["num_well"] = 15 * kwargs["num_field_periods"] // eq.NFP
     if objective is AvailableEnergy:
         kwargs.setdefault("Y_B", 16)
-        kwargs.setdefault("quad_abs_err", 1e-3)
-        kwargs.setdefault("quad_rel_err", 1e-3)
+        kwargs.setdefault("quad_atol", 1e-3)
+        kwargs.setdefault("quad_rtol", 1e-3)
     if objective is GammaLoss:
         kind = kwargs.pop("kind")
         return objective(kind, eq=eq, **kwargs)
