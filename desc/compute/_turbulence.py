@@ -48,7 +48,7 @@ def _ae_precompute(G, G_ω_α, G_ω_ψ, data):
         Energy-independent, scaled quantities that may be given to ``_ae_kernel``.
 
         The shapes of ``G``, ``G_ω_α``, ``G_ω_ψ``, and ``drift`` are
-        (..., num alpha, num pitch, 1, num well).
+        (..., 1, num alpha, num pitch, num well).
         The shapes of ``η_T`` and ``C`` are
         (..., 1, 1, 1, 1),
         where the ... indicates a potential leading axis of size num rho.
@@ -60,10 +60,10 @@ def _ae_precompute(G, G_ω_α, G_ω_ψ, data):
     """
     shape = (-1,) + (1,) * G.ndim
 
-    G = G[..., None, :]  # This is sqrt G hat.
+    G = G[..., None, :, :, :]  # This is sqrt G hat.
     # scale by conjugate widths
-    G_ω_α = G_ω_α[..., None, :] * data["ae psi width"].reshape(shape)
-    G_ω_ψ = G_ω_ψ[..., None, :] * data["ae alpha width"].reshape(shape)
+    G_ω_α = G_ω_α[..., None, :, :, :] * data["ae psi width"].reshape(shape)
+    G_ω_ψ = G_ω_ψ[..., None, :, :, :] * data["ae alpha width"].reshape(shape)
     η_n = data["ae grad(density)"].reshape(shape)
     η_T = data["ae grad(temperature)"].reshape(shape)
     C = η_n - 1.5 * η_T
@@ -81,7 +81,7 @@ def _ae_kernel(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy):
         Energy-independent, scaled quantities returned by ``_ae_precompute``.
 
         The shapes of ``G``, ``G_ω_α``, ``G_ω_ψ``, and ``drift`` are
-        (..., num alpha, num pitch, 1, num well).
+        (..., 1, num alpha, num pitch, num well).
         The shapes of ``η_T`` and ``C`` are
         (..., 1, 1, 1, 1),
         where the ... indicates a potential leading axis of size num rho.
@@ -96,11 +96,11 @@ def _ae_kernel(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy):
     Returns
     -------
     output : jnp.ndarray
-        Shape (..., num alpha, num pitch, num energy, num well),
+        Shape (..., num energy, num alpha, num pitch, num well),
         where the ... indicates a potential leading axis of size num rho.
 
     """
-    energy = energy[..., None]
+    energy = energy[..., None, None, None]
     drive = jnp.hypot(G * (η_T + safediv(C, energy)) - G_ω_α, G_ω_ψ)
     return G_ω_α * C + (G_ω_α * η_T + safediv(drift * (drive - drift), G)) * energy
 
@@ -114,7 +114,7 @@ def _ae_reduce(G, G_ω_α, G_ω_ψ, η_T, C, drift, pitch_weight, energy):
         Energy-independent, scaled quantities returned by ``_ae_precompute``.
 
         The shapes of ``G``, ``G_ω_α``, ``G_ω_ψ``, and ``drift`` are
-        (..., num alpha, num pitch, 1, num well).
+        (..., 1, num alpha, num pitch, num well).
         The shapes of ``η_T`` and ``C`` are
         (..., 1, 1, 1, 1),
         where the ... indicates a potential leading axis of size num rho.
@@ -138,9 +138,9 @@ def _ae_reduce(G, G_ω_α, G_ω_ψ, η_T, C, drift, pitch_weight, energy):
 
     """
     return (
-        pitch_weight[..., None]
-        * _ae_kernel(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy).sum(-1).mean(-3)
-    ).sum(-2)
+        pitch_weight[..., None, :]
+        * _ae_kernel(G, G_ω_α, G_ω_ψ, η_T, C, drift, energy).sum(-1).mean(-2)
+    ).sum(-1)
 
 
 def _energy_quad(num_energy):

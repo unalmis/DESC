@@ -286,7 +286,7 @@ def _ae_well_data(
     ae_data = _ae_precompute(*bounce_data, fun_data)
     ae_per_pitch_well = quadgk(
         lambda energy: (energy**1.5 * jnp.exp(-energy))
-        * _ae_kernel(*ae_data, energy).squeeze(-2),
+        * _ae_kernel(*ae_data, energy).squeeze(-4),
         jnp.array([0.0, jnp.inf]),
         epsabs=quad_atol,
         epsrel=quad_rtol,
