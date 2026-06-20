@@ -196,6 +196,15 @@ def _energy_quad(num_energy):
 def _available_energy(params, transforms, profiles, data, **kwargs):
     """Dimensionless available energy of trapped electrons [2]_.
 
+    Warnings
+    --------
+    By default, an adaptive quadrature in the energy integral will be used.
+    The current implementation to compute the derivative relevant for optimisation
+    of the adaptive quadrature can be made significantly more effecient.
+    See https://github.com/f0uriest/quadax/issues/111 if you would like to contribute.
+    For faster performance, albeit at the expense of accuracy, set ``quad_atol=0.0`` to
+    use a generalized Laguerre quadrature with a resolution of 32 points.
+
     Parameters
     ----------
     radial_scale, binormal_scale : float

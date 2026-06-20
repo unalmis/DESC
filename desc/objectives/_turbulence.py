@@ -29,6 +29,15 @@ class AvailableEnergy(_Objective):
            bounce-averaging algorithm and its applications,"
            J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
 
+    Warnings
+    --------
+    By default, an adaptive quadrature in the energy integral will be used.
+    The current implementation to compute the derivative relevant for optimisation
+    of the adaptive quadrature can be made significantly more effecient.
+    See https://github.com/f0uriest/quadax/issues/111 if you would like to contribute.
+    For faster performance, albeit at the expense of accuracy, set ``quad_atol=0.0`` to
+    use a generalized Laguerre quadrature with a resolution of 32 points.
+
     """
 
     __doc__ = (
