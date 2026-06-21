@@ -7,7 +7,7 @@ Stellarator Optimization Package
 ################################
 |License| |DOI| |Issues| |Pypi|
 
-|Docs| |UnitTests| |RegressionTests| |Codecov|
+|Docs| |UnitTests| |RegressionTests|
 
 Improvements
 ============
