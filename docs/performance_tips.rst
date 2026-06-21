@@ -31,7 +31,7 @@ By default, JAX will pre-allocate only 75% of the available GPU memory and hence
 
 We have seen that increasing the fraction can resolve Out of Memory (OOM) errors for many cases.
 
-Alternatively, if you don't want to preallocate memory (for debugging or memory profiling, see `profiler <https://github.com/PlasmaControl/DESC/blob/master/tests/benchmarks/memory_benchmark_cpu.py>`__ and `script <https://github.com/PlasmaControl/DESC/blob/master/tests/benchmarks/memory_funcs.py>`__ files for example memory profiling), you can set the following environment variable to allow JAX to allocate memory as needed:
+Alternatively, if you don't want to preallocate memory (for debugging or memory profiling, see `profiler <https://github.com/unalmis/DESC/blob/master/tests/benchmarks/memory_benchmark_cpu.py>`__ and `script <https://github.com/unalmis/DESC/blob/master/tests/benchmarks/memory_funcs.py>`__ files for example memory profiling), you can set the following environment variable to allow JAX to allocate memory as needed:
 
 .. code-block:: python
 

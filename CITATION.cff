@@ -7,54 +7,19 @@ message: >-
   https://zenodo.org/search?page=1&size=20&q=conceptrecid:%224876504%22&sort=-version&all_versions=True
 type: software
 authors:
-  - given-names: Daniel
-    family-names: Dudt
-    email: daniel@thea.energy
-    affiliation: Thea Energy
-    orcid: 'https://orcid.org/0000-0002-4557-3529'
-  - given-names: Rory
-    family-names: Conlin
-    email: roryconlin@gmail.com
-    affiliation: University of Maryland, College Park
-    orcid: 'https://orcid.org/0000-0001-8366-2111'
-  - given-names: Dario
-    family-names: Panici
-    email: dpanici@princeton.edu
-    affiliation: Princeton University
-    orcid: 'https://orcid.org/0000-0003-0736-4360'
   - given-names: Kaya
     family-names: Unalmis
-    email: kunalmis@princeton.edu
-    affiliation: Princeton University
+    email: kunalmis@stanford.edu
+    affiliation: Stanford University
     orcid: 'https://orcid.org/0000-0002-1755-6764'
-  - given-names: Yigit Gunsur
-    family-names: Elmacioglu
-    email: yigit.elma@princeton.edu
-    affiliation: Princeton University
-    orcid: 'https://orcid.org/0009-0002-7747-2834'
-  - given-names: Rahul
-    family-names: Gaur
-    email: rgaur@terpmail.umd.edu
-    affiliation: University of Wisconsin-Madison
-    orcid: 'https://orcid.org/0000-0003-4367-9052'
-  - given-names: Patrick
-    family-names: Kim
-    email: sungha.p.kim@gmail.com
-    affiliation: Princeton University
-    orcid: 'https://orcid.org/0000-0003-3201-1831'
-  - given-names: Egemen
-    family-names: Kolemen
-    email: ekolemen@princeton.edu
-    affiliation: Princeton University
-    orcid: 'https://orcid.org/0000-0003-4212-3247'
 identifiers:
   - type: doi
     value: 10.5281/zenodo.4876504
     description: 'Master DOI for DESC, points to latest release.'
   - type: url
-    value: 'https://github.com/PlasmaControl/DESC'
+    value: 'https://github.com/unalmis/DESC'
     description: 'Github repository for DESC'
-repository-code: 'https://github.com/PlasmaControl/DESC'
-url: 'https://desc-docs.readthedocs.io'
-repository-artifact: 'https://pypi.org/project/desc-opt/'
+repository-code: 'https://github.com/unalmis/DESC'
+url: 'https://unalmis.github.io/DESC'
+repository-artifact: 'https://pypi.org/project/desc-v2/'
 license: MIT

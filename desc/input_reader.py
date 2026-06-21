@@ -964,7 +964,7 @@ class InputReader:
             "# This DESC input file was auto generated from the VMEC input file\n"
             + "# {}\n# on {} at {}.\n".format(vmec_fname, date, time)
             + "# For details on the various options see "
-            + "https://desc-docs.readthedocs.io/en/stable/input.html\n"
+            + "https://unalmis.github.io/DESC/input.html\n"
         )
         inputs = InputReader.parse_vmec_inputs(vmec_fname)
         InputReader.write_desc_input(desc_fname, inputs, header)
