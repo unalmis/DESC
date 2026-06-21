@@ -8,7 +8,7 @@ References
 .. [2] R. J. J. Mackenbach et al., J. Plasma Phys. 89, 905890513 (2023).
 .. [3] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
        bounce-averaging algorithm and its applications,"
-       J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
+       J. Plasma Physics. 2026;92(3):E72. https://arxiv.org/pdf/2412.01724.
 
 """
 
@@ -209,10 +209,10 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
     ----------
     radial_scale, binormal_scale : float
         Correlation-length multipliers. Default is 1.0.
-    quad_atol, quad_rtol : float or bool
-        Tolerances for the adaptive energy quadrature. If ``quad_atol`` is
-        False, then this is interpreted as a flag to use a fixed quadrature,
-        which is faster, but less accurate.
+    quad_atol, quad_rtol : float
+        Tolerances for the adaptive energy quadrature.
+        If ``quad_atol=0.0``, then this is interpreted as a flag to use a fixed
+        quadrature, which is faster, but less accurate.
         Default is 1e-6.
 
     """

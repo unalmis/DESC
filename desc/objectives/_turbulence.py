@@ -27,7 +27,7 @@ class AvailableEnergy(_Objective):
     .. [1] R. J. J. Mackenbach et al., J. Plasma Phys. 89, 905890513 (2023).
     .. [2] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://arxiv.org/pdf/2412.01724.
 
     Warnings
     --------
@@ -50,10 +50,10 @@ class AvailableEnergy(_Objective):
     binormal_scale : float
         Multiplier for the binormal correlation length.
         Default is 1.0.
-    quad_atol : float or False
+    quad_atol : float
         Absolute tolerance for adaptive energy quadrature.
-        If False, then this is interpreted as a flag to use a fixed quadrature,
-        which is faster, but less accurate.
+        If ``quad_atol=0.0``, then this is interpreted as a flag to use a fixed
+        quadrature, which is faster, but less accurate.
         Default is 1e-6.
     quad_rtol : float
         Relative tolerance for adaptive energy quadrature.
@@ -134,8 +134,8 @@ class AvailableEnergy(_Objective):
             "spline": spline,
             "radial_scale": radial_scale,
             "binormal_scale": binormal_scale,
-            "quad_atol": quad_atol,
-            "quad_rtol": quad_rtol,
+            "quad_atol": float(quad_atol),
+            "quad_rtol": float(quad_rtol),
         }
 
         super().__init__(

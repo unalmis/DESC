@@ -37,7 +37,7 @@ class GammaC(_Objective):
            https://doi.org/10.1088/1741-4326/ac2994.
     .. [3] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://arxiv.org/pdf/2412.01724.
 
     """
 
@@ -205,7 +205,7 @@ class GammaLoss(_Objective):
            https://doi.org/10.1088/1741-4326/ac2994.
     .. [2] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
            bounce-averaging algorithm and its applications,"
-           J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
+           J. Plasma Physics. 2026;92(3):E72. https://arxiv.org/pdf/2412.01724.
 
     """
 

@@ -7,7 +7,7 @@ References
 ----------
 .. [1] K. Unalmis et al., "Spectrally accurate, reverse-mode differentiable
         bounce-averaging algorithm and its applications,"
-        J. Plasma Physics. 2026;92(3):E72. https://doi.org/10.1017/S0022377826101652.
+        J. Plasma Physics. 2026;92(3):E72. https://arxiv.org/pdf/2412.01724.
 .. [2] V. V. Nemov, S. V. Kasilov, W. Kernbichler, and G. O. Leitold,
        "Poloidal motion of trapped particle orbits in real-space coordinates,"
        Phys. Plasmas 15, 052501 (2008). https://doi.org/10.1063/1.2912456.
