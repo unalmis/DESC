@@ -232,7 +232,7 @@ Utilities for getting common groups of constraints
 Optimization
 ************
 ``desc.optimize.Optimizer`` is the primary interface, it contains wrappers for a number
-of different methods listed in `Optimizers Supported <https://desc-docs.readthedocs.io/en/latest/optimizers.html>`_.
+of different methods listed in `Optimizers Supported <https://unalmis.github.io/DESC/optimizers.html>`_.
 
 .. autosummary::
    :toctree: _api/optimize
@@ -256,7 +256,7 @@ with a direct interface similar to ``scipy.optimize.minimize``:
    desc.optimize.sgd
 
 DESC also allows you to use custom optimizers by creating a wrapper function and
-registering it using ``desc.optimize.register_optimizer``. See `Adding optimizers <https://desc-docs.readthedocs.io/en/stable/adding_optimizers.html>`_
+registering it using ``desc.optimize.register_optimizer``. See `Adding optimizers <https://unalmis.github.io/DESC/adding_optimizers.html>`_
 for details
 
 .. autosummary::

@@ -1,4 +1,4 @@
-.. image:: https://raw.githubusercontent.com/PlasmaControl/DESC/master/docs/_static/images/logo_med_clear.png
+.. image:: https://raw.githubusercontent.com/unalmis/DESC/master/docs/_static/images/logo_med_clear.png
 
 .. inclusion-marker-do-not-remove
 
@@ -12,18 +12,18 @@ Stellarator Optimization Package
 Improvements
 ============
 Like the original package, but with bounce integrals as well as all the improvements
-`here <https://github.com/PlasmaControl/DESC/pulls/unalmis>`__.
+in `this fork <https://github.com/unalmis/DESC>`__.
 
 A list of papers which feature DESC can be found here_.
 
-.. _Theory: https://desc-docs.readthedocs.io/en/latest/theory_general.html
-.. _here: https://desc-docs.readthedocs.io/en/latest/pubs_list.html
+.. _Theory: https://unalmis.github.io/DESC/theory_general.html
+.. _here: https://unalmis.github.io/DESC/pubs_list.html
 
 
 Quick Start
 ===========
 
-The easiest way to install DESC is from PyPI: ``pip install desc-opt``
+The easiest way to install DESC is from PyPI: ``pip install desc-v2``
 
 For more detailed instructions on installing DESC and its dependencies, see Installation_.
 
@@ -53,19 +53,19 @@ Refer to `Inputs`_ for documentation on how to format the input file.
 
 The equilibrium solution is output in a HDF5 binary file, whose format is detailed in `Outputs`_.
 
-.. _Installation: https://desc-docs.readthedocs.io/en/latest/installation.html
-.. _Command Line Interface: https://desc-docs.readthedocs.io/en/latest/command_line.html
-.. _Inputs: https://desc-docs.readthedocs.io/en/latest/input.html
-.. _Outputs: https://desc-docs.readthedocs.io/en/latest/output.html
-.. _Basic fixed boundary equilibrium: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/basic_equilibrium.html
-.. _Advanced equilibrium: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/advanced_equilibrium_continuation.html
-.. _Free boundary equilibrium: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/free_boundary_equilibrium.html
-.. _Using DESC outputs: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/use_outputs.html
-.. _Basic optimization: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/basic_optimization.html
-.. _Advanced optimization: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/advanced_optimization.html
-.. _Near axis constraints: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/nae_constraint.html
-.. _Coil optimization: https://desc-docs.readthedocs.io/en/latest/notebooks/tutorials/coil_stage_two_optimization.html
-.. _api documentation: https://desc-docs.readthedocs.io/en/latest/api.html
+.. _Installation: https://unalmis.github.io/DESC/installation.html
+.. _Command Line Interface: https://unalmis.github.io/DESC/command_line.html
+.. _Inputs: https://unalmis.github.io/DESC/input.html
+.. _Outputs: https://unalmis.github.io/DESC/output.html
+.. _Basic fixed boundary equilibrium: https://unalmis.github.io/DESC/notebooks/tutorials/basic_equilibrium.html
+.. _Advanced equilibrium: https://unalmis.github.io/DESC/notebooks/tutorials/advanced_equilibrium_continuation.html
+.. _Free boundary equilibrium: https://unalmis.github.io/DESC/notebooks/tutorials/free_boundary_equilibrium.html
+.. _Using DESC outputs: https://unalmis.github.io/DESC/notebooks/tutorials/use_outputs.html
+.. _Basic optimization: https://unalmis.github.io/DESC/notebooks/tutorials/basic_optimization.html
+.. _Advanced optimization: https://unalmis.github.io/DESC/notebooks/tutorials/advanced_optimization.html
+.. _Near axis constraints: https://unalmis.github.io/DESC/notebooks/tutorials/nae_constraint.html
+.. _Coil optimization: https://unalmis.github.io/DESC/notebooks/tutorials/coil_stage_two_optimization.html
+.. _api documentation: https://unalmis.github.io/DESC/api.html
 
 Repository Contents
 ===================
@@ -75,48 +75,48 @@ Repository Contents
 - tests_ contains routines for automatic testing.
 - publications_ contains PDFs of publications by the DESC group, as well as scripts and data to reproduce the results of these papers.
 
-.. _desc: https://github.com/PlasmaControl/DESC/tree/master/desc
-.. _docs: https://github.com/PlasmaControl/DESC/tree/master/docs
-.. _tests: https://github.com/PlasmaControl/DESC/tree/master/tests
-.. _publications: https://github.com/PlasmaControl/DESC/tree/master/publications
-.. _API: https://desc-docs.readthedocs.io/en/latest/api.html
+.. _desc: https://github.com/unalmis/DESC/tree/master/desc
+.. _docs: https://github.com/unalmis/DESC/tree/master/docs
+.. _tests: https://github.com/unalmis/DESC/tree/master/tests
+.. _publications: https://github.com/unalmis/DESC/tree/master/publications
+.. _API: https://unalmis.github.io/DESC/api.html
 
 Contribute
 ==========
 
-- `Contributing guidelines <https://github.com/PlasmaControl/DESC/blob/master/CONTRIBUTING.rst>`_
-- `Issue Tracker <https://github.com/PlasmaControl/DESC/issues>`_
-- `Source Code <https://github.com/PlasmaControl/DESC/>`_
-- `Documentation <https://desc-docs.readthedocs.io/en/stable/>`_
+- `Contributing guidelines <https://github.com/unalmis/DESC/blob/master/CONTRIBUTING.rst>`_
+- `Issue Tracker <https://github.com/unalmis/DESC/issues>`_
+- `Source Code <https://github.com/unalmis/DESC/>`_
+- `Documentation <https://unalmis.github.io/DESC/>`_
 
-.. |License| image:: https://img.shields.io/github/license/PlasmaControl/desc?color=blue&logo=open-source-initiative&logoColor=white
-    :target: https://github.com/PlasmaControl/DESC/blob/master/LICENSE
+.. |License| image:: https://img.shields.io/github/license/unalmis/DESC?color=blue&logo=open-source-initiative&logoColor=white
+    :target: https://github.com/unalmis/DESC/blob/master/LICENSE
     :alt: License
 
 .. |DOI| image:: https://zenodo.org/badge/DOI/10.5281/zenodo.4876504.svg
    :target: https://doi.org/10.5281/zenodo.4876504
    :alt: DOI
 
-.. |Docs| image:: https://img.shields.io/readthedocs/desc-docs?logo=Read-the-Docs
-    :target: https://desc-docs.readthedocs.io/en/latest/?badge=latest
+.. |Docs| image:: https://github.com/unalmis/DESC/actions/workflows/docs.yml/badge.svg
+    :target: https://unalmis.github.io/DESC/
     :alt: Documentation
 
-.. |UnitTests| image:: https://github.com/PlasmaControl/DESC/actions/workflows/unit_tests.yml/badge.svg
-    :target: https://github.com/PlasmaControl/DESC/actions/workflows/unit_tests.yml
+.. |UnitTests| image:: https://github.com/unalmis/DESC/actions/workflows/unit_tests.yml/badge.svg
+    :target: https://github.com/unalmis/DESC/actions/workflows/unit_tests.yml
     :alt: UnitTests
 
-.. |RegressionTests| image:: https://github.com/PlasmaControl/DESC/actions/workflows/regression_tests.yml/badge.svg
-    :target: https://github.com/PlasmaControl/DESC/actions/workflows/regression_tests.yml
+.. |RegressionTests| image:: https://github.com/unalmis/DESC/actions/workflows/regression_tests.yml/badge.svg
+    :target: https://github.com/unalmis/DESC/actions/workflows/regression_tests.yml
     :alt: RegressionTests
 
-.. |Codecov| image:: https://codecov.io/gh/PlasmaControl/DESC/branch/master/graph/badge.svg?token=5LDR4B1O7Z
-    :target: https://codecov.io/github/PlasmaControl/DESC
+.. |Codecov| image:: https://codecov.io/gh/unalmis/DESC/branch/master/graph/badge.svg
+    :target: https://codecov.io/gh/unalmis/DESC
     :alt: Coverage
 
-.. |Issues| image:: https://img.shields.io/github/issues/PlasmaControl/DESC
-    :target: https://github.com/PlasmaControl/DESC/issues
+.. |Issues| image:: https://img.shields.io/github/issues/unalmis/DESC
+    :target: https://github.com/unalmis/DESC/issues
     :alt: GitHub issues
 
-.. |Pypi| image:: https://img.shields.io/pypi/v/desc-opt
-    :target: https://pypi.org/project/desc-opt/
+.. |Pypi| image:: https://img.shields.io/pypi/v/desc-v2
+    :target: https://pypi.org/project/desc-v2/
     :alt: Pypi

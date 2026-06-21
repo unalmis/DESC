@@ -54,7 +54,7 @@ extensions = [
 # options for sphinx_github_style
 top_level = "desc"
 linkcode_blob = "head"
-linkcode_url = r"https://github.com/PlasmaControl/DESC"
+linkcode_url = r"https://github.com/unalmis/DESC"
 linkcode_link_text = "Source"
 
 # numpydoc_class_members_toctree = False
@@ -188,7 +188,7 @@ html_show_copyright = True
 # html_file_suffix = None
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = "desc-docs"
+htmlhelp_basename = "desc-v2-docs"
 
 
 # -- Options for LaTeX output ---------------------------------------------

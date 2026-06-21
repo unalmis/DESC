@@ -1,7 +1,7 @@
 """Surface integrals of non-singular functions.
 
 If you would like to view a detailed tutorial for use of these functions, see
-https://desc-docs.readthedocs.io/en/latest/notebooks/dev_guide/grid.html.
+https://unalmis.github.io/DESC/notebooks/dev_guide/grid.html.
 """
 
 from desc.backend import cond, fori_loop, jnp, put

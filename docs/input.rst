@@ -351,7 +351,7 @@ The DESC input file will be this, titled ``input.HELIOTRON_desc``:
 .. code-block:: text
 
    # This DESC input file was auto generated from a VMEC input file
-   # For details on the various options see https://desc-docs.readthedocs.io/en/stable/input.html
+   # For details on the various options see https://unalmis.github.io/DESC/input.html
 
    # global parameters
    sym = 1

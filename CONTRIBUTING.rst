@@ -30,7 +30,7 @@ I don’t want to read this whole thing I just have a question!!!
 ***************************************************************
 
 If you just want to ask a question, the simplest method is to `create an issue
-on github <https://github.com/PlasmaControl/DESC/issues/new>`__ and begin the
+on github <https://github.com/unalmis/DESC/issues/new>`__ and begin the
 subject line with ``Question:`` That way it will be seen by all developers, and
 the answer will be viewable by other users.
 
@@ -47,7 +47,7 @@ Reporting Bugs
 How Do I Submit A (Good) Bug Report?
 ------------------------------------
 
-Bugs are tracked as `GitHub issues <https://github.com/PlasmaControl/DESC/issues/>`__.
+Bugs are tracked as `GitHub issues <https://github.com/unalmis/DESC/issues/>`__.
 
 Explain the problem and include additional details to help maintainers
 reproduce the problem:
@@ -110,9 +110,9 @@ requesting existed.
 Before Submitting An Enhancement Suggestion
 -------------------------------------------
 
--  `Check the documentation <https://desc-docs.readthedocs.io/en/latest/>`__
+-  `Check the documentation <https://unalmis.github.io/DESC/>`__
    for tips — you might discover that the enhancement is already available.
--  `Perform a cursory search <https://github.com/PlasmaControl/DESC/issues?q=is%3Aopen+is%3Aissue+label%3Aenhancement>`__
+-  `Perform a cursory search <https://github.com/unalmis/DESC/issues?q=is%3Aopen+is%3Aissue+label%3Aenhancement>`__
    to see if the enhancement has already been suggested. If it has, add
    a comment to the existing issue instead of opening a new one.
 
@@ -142,13 +142,13 @@ Your First Code Contribution
 Unsure where to begin contributing to DESC? You can start by looking
 through these ``good first issue`` and ``help wanted`` issues:
 
--  `Good first issues <https://github.com/PlasmaControl/DESC/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22>`__ - issues which should only require a few lines of code, and a test or two.
--  `Help wanted issues <https://github.com/PlasmaControl/DESC/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22>`__ - issues which should be a bit more involved than beginner issues.
+-  `Good first issues <https://github.com/unalmis/DESC/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22>`__ - issues which should only require a few lines of code, and a test or two.
+-  `Help wanted issues <https://github.com/unalmis/DESC/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22>`__ - issues which should be a bit more involved than beginner issues.
 
 Pull Requests
 *************
 
-Once you've made your changes on a local branch, `open a pull request <https://github.com/PlasmaControl/DESC/pulls>`_
+Once you've made your changes on a local branch, `open a pull request <https://github.com/unalmis/DESC/pulls>`_
 on github. In the description, give a summary of what is being changed and why. Try to keep pull requests small and atomic,
 with each PR focused on a adding or fixing a single thing. Large PRs will generally take much longer to review and approve.
 
@@ -158,7 +158,7 @@ or edits to your PR.
 
 What if the ``test_compute_everything`` test fails, or there is a conflict in ``master_compute_data_rpz.pkl``?
 ----------------------------------------------------------------------------------------------------------
-When the outputs of the compute quantities tested by the `test_compute_everything` [test](https://github.com/PlasmaControl/DESC/blob/master/tests/test_compute_everything.py) are changed in a PR, that test will fail.
+When the outputs of the compute quantities tested by the `test_compute_everything` [test](https://github.com/unalmis/DESC/blob/master/tests/test_compute_everything.py) are changed in a PR, that test will fail.
 The three main reasons this could occur are:
 
 -  The PR was not intended to change how things are computed, but messed up something unexpected and now the compute quantities are incorrect, if you did not expect these changes in the PR then look into why these differences are happening and fix the PR.
@@ -190,7 +190,7 @@ with
    does not break, but is informed of the change. Add the old name an alias in the ``aliases`` part of the ``register_compute_function`` decorator,
    and add to the ``deprecated_names`` dictionary in ``desc/compute/data_index.py`` the deprecated name as a key and the corresponding value as the new name for that variable.
 
-If the 3rd case is the reason, then you must simply add the new parametrization to the ``test_compute_everything`` [test](https://github.com/PlasmaControl/DESC/blob/master/tests/test_compute_everything.py)
+If the 3rd case is the reason, then you must simply add the new parametrization to the ``test_compute_everything`` [test](https://github.com/unalmis/DESC/blob/master/tests/test_compute_everything.py)
 
 -  ``things`` dictionary with a sensible example instance of the class to use for the test, and
 -  to the ``grid`` dictionary with a sensible default grid to use when computing the compute quantities for the new class

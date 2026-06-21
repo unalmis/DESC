@@ -11,7 +11,7 @@ from .stochastic import sgd
 
 # List of all optax optimizers to register
 # You may use the following test to update the list accordingly
-# https://github.com/PlasmaControl/DESC/pull/2041#issuecomment-3813092445
+# https://github.com/unalmis/DESC/pull/2041#issuecomment-3813092445
 _all_optax_optimizers = [
     "adabelief",
     "adadelta",
@@ -50,10 +50,10 @@ _all_optax_optimizers = [
     description=[
         "Augmented Lagrangian trust region method for minimizing scalar valued "
         + "multivariate function. "
-        + "See https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.fmin_auglag.html",  # noqa: E501
+        + "See https://unalmis.github.io/DESC/_api/optimize/desc.optimize.fmin_auglag.html",  # noqa: E501
         "Augmented Lagrangian trust region method for minimizing scalar valued "
         + "multivariate function. Uses BFGS to approximate Hessian. "
-        + "See https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.fmin_auglag.html",  # noqa: E501
+        + "See https://unalmis.github.io/DESC/_api/optimize/desc.optimize.fmin_auglag.html",  # noqa: E501
     ],
     scalar=True,
     equality_constraints=True,
@@ -150,7 +150,7 @@ def _optimize_desc_aug_lagrangian(
 @register_optimizer(
     name="lsq-auglag",
     description="Least squares augmented Lagrangian for constrained optimization"
-    + "See https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.lsq_auglag.html",  # noqa: E501
+    + "See https://unalmis.github.io/DESC/_api/optimize/desc.optimize.lsq_auglag.html",  # noqa: E501
     scalar=False,
     equality_constraints=True,
     inequality_constraints=True,
@@ -241,7 +241,7 @@ def _optimize_desc_aug_lagrangian_least_squares(
 @register_optimizer(
     name="lsq-exact",
     description="Trust region least squares, similar to the `trf` method in scipy"
-    + "See https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.lsqtr.html",  # noqa: E501
+    + "See https://unalmis.github.io/DESC/_api/optimize/desc.optimize.lsqtr.html",  # noqa: E501
     scalar=False,
     equality_constraints=False,
     inequality_constraints=False,
@@ -326,10 +326,10 @@ def _optimize_desc_least_squares(
     ],
     description=[
         "Trust region method for minimizing scalar valued multivariate function. See "
-        + "https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.fmintr.html",  # noqa: E501
+        + "https://unalmis.github.io/DESC/_api/optimize/desc.optimize.fmintr.html",  # noqa: E501
         "Trust region method for minimizing scalar valued multivariate function. Uses "
         + "BFGS to approximate the Hessian. See "
-        + "https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.fmintr.html",  # noqa: E501
+        + "https://unalmis.github.io/DESC/_api/optimize/desc.optimize.fmintr.html",  # noqa: E501
     ],
     scalar=True,
     equality_constraints=False,
@@ -414,9 +414,9 @@ def _optimize_desc_fmin_scalar(
     name=["sgd", "optax-custom"] + ["optax-" + opt for opt in _all_optax_optimizers],
     description=[
         "Stochastic gradient descent with Nesterov momentum. See "
-        + "https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.sgd.html",  # noqa: E501
+        + "https://unalmis.github.io/DESC/_api/optimize/desc.optimize.sgd.html",  # noqa: E501
         "Wrapper for custom ``optax`` optimizer. See "
-        + "https://desc-docs.readthedocs.io/en/stable/_api/optimize/desc.optimize.sgd.html",  # noqa: E501
+        + "https://unalmis.github.io/DESC/_api/optimize/desc.optimize.sgd.html",  # noqa: E501
     ]
     + [
         f"``optax`` wrapper for {opt}. See "

@@ -502,7 +502,7 @@ class ObjectiveFromUser(_Objective):
     JAX array. The source code of the function must be visible to the ``inspect`` module
     for parsing.
 
-    .. _variables: https://desc-docs.readthedocs.io/en/stable/variables.html
+    .. _variables: https://unalmis.github.io/DESC/variables.html
 
     Parameters
     ----------

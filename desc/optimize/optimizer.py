@@ -171,7 +171,7 @@ class Optimizer(IOAble):
               Minimum allowed scale value. Default is 1e-7.
 
             See the documentation page [Optimizers
-            Supported](https://desc-docs.readthedocs.io/en/stable/optimizers.html)
+            Supported](https://unalmis.github.io/DESC/optimizers.html)
             for more details on the options available to each specific optimizer.
 
         copy : bool

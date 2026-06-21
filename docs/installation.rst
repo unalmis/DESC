@@ -31,13 +31,13 @@ On Your Local Machine
 
             .. code-block:: sh
 
-                pip install desc-opt
+                pip install desc-v2
 
         .. dropdown:: GitHub
 
             .. code-block:: sh
 
-                git clone https://github.com/PlasmaControl/DESC.git
+                git clone https://github.com/unalmis/DESC.git
                 cd DESC
                 conda create --name desc-env 'python>=3.10, <=3.14'
                 conda activate desc-env
@@ -65,7 +65,7 @@ On Your Local Machine
                 curl -LsSf https://astral.sh/uv/install.sh | sh
 
                 # the depth=1 option reduces the quantity of older data downloaded
-                git clone --depth=1 git@github.com:PlasmaControl/DESC.git
+                git clone --depth=1 git@github.com:unalmis/DESC.git
 
                 # initialize a project
                 uv init myproject
@@ -98,7 +98,7 @@ On Your Local Machine
 
         .. code-block:: sh
 
-            git clone https://github.com/PlasmaControl/DESC.git
+            git clone https://github.com/unalmis/DESC.git
             cd DESC
             conda create --name desc-env 'python>=3.10, <=3.14'
             conda activate desc-env
@@ -118,7 +118,7 @@ On Your Local Machine
 
         .. code-block:: sh
 
-            git clone https://github.com/PlasmaControl/DESC.git
+            git clone https://github.com/unalmis/DESC.git
             cd DESC
             conda create --name desc-env -c conda-forge 'python>=3.10, <=3.13' 'fftw' 'gxx<12'
             conda activate desc-env
@@ -151,7 +151,7 @@ On Most Linux Computing Clusters
 
             .. code-block:: sh
 
-                pip install desc-opt
+                pip install desc-v2
 
         .. dropdown:: GitHub
 
@@ -164,7 +164,7 @@ On Most Linux Computing Clusters
 
             .. code-block:: sh
 
-                git clone https://github.com/PlasmaControl/DESC.git
+                git clone https://github.com/unalmis/DESC.git
                 cd DESC
                 conda create --name desc-env 'python>=3.10, <=3.14'
                 conda activate desc-env
@@ -209,7 +209,7 @@ On Most Linux Computing Clusters
 
             .. code-block:: sh
 
-                git clone https://github.com/PlasmaControl/DESC.git
+                git clone https://github.com/unalmis/DESC.git
                 cd DESC
 
                 pip install --no-cache-dir -r devtools/dev-requirements.txt
@@ -233,7 +233,7 @@ On Most Linux Computing Clusters
                 module load anaconda3/2024.10
                 module load cudatoolkit/12.9
 
-                git clone https://github.com/PlasmaControl/DESC.git
+                git clone https://github.com/unalmis/DESC.git
                 cd DESC
                 conda create --name desc-env -c conda-forge 'python=3.12' 'fftw' 'gxx<12'
                 conda activate desc-env
@@ -266,7 +266,7 @@ On Most Linux Computing Clusters
                 CONDA_OVERRIDE_CUDA="12.2" conda create --name desc-env "jax==0.4.23" "jaxlib==0.4.23=cuda12*" -c conda-forge
                 conda activate desc-env
 
-                git clone https://github.com/PlasmaControl/DESC
+                git clone https://github.com/unalmis/DESC
                 cd DESC
 
             Top pin the allowed ``scipy`` version as follows by editing the ``requirements.txt`` file in the current directory.
@@ -305,7 +305,7 @@ To verify your installation works, try the following.
             print_backend_info()
 
         You can try running an example equilibrium solve.
-        (The filepath shown here is from the ``DESC`` folder if you have cloned the git repo. Otherwise the file can be downloaded `here <https://github.com/PlasmaControl/DESC/blob/master/desc/examples/SOLOVEV>`__.)
+        (The filepath shown here is from the ``DESC`` folder if you have cloned the git repo. Otherwise the file can be downloaded `here <https://github.com/unalmis/DESC/blob/master/desc/examples/SOLOVEV>`__.)
 
         .. code-block:: sh
 
@@ -324,7 +324,7 @@ To verify your installation works, try the following.
             print_backend_info()
 
         You can try running an example equilibrium solve.
-        (The filepath shown here is from the ``DESC`` folder if you have cloned the git repo. Otherwise the file can be downloaded `here <https://github.com/PlasmaControl/DESC/blob/master/desc/examples/SOLOVEV>`__.)
+        (The filepath shown here is from the ``DESC`` folder if you have cloned the git repo. Otherwise the file can be downloaded `here <https://github.com/unalmis/DESC/blob/master/desc/examples/SOLOVEV>`__.)
 
         .. code-block:: sh
 
@@ -349,7 +349,7 @@ To verify your installation works, try the following.
 Troubleshooting
 ***************
 We list common problems and their possible solutions.
-If you encounter other problems, please `make an issue on Github <https://github.com/PlasmaControl/DESC/issues>`__ and we will help.
+If you encounter other problems, please `make an issue on Github <https://github.com/unalmis/DESC/issues>`__ and we will help.
 
 .. tip::
 
@@ -372,11 +372,11 @@ If you encounter other problems, please `make an issue on Github <https://github
 .. tip::
 
     **Problem**: Attempts to install yield ``ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behavior is the source of the following dependency conflicts.
-    desc-opt ...`` with a list of incompatibilities.
+    desc-v2 ...`` with a list of incompatibilities.
 
     **Solution**:
     This may be due to another version of DESC or ``jax`` that is installed in the conda ``base`` environment.
-    Try deleting the ``DESC`` folder, ensuring that ``pip list`` in the conda ``base`` environment no longer lists ``desc-opt`` or ``jax``, then repeating the installation.
+    Try deleting the ``DESC`` folder, ensuring that ``pip list`` in the conda ``base`` environment no longer lists ``desc-v2`` or ``jax``, then repeating the installation.
 
 .. tip::
 
@@ -392,7 +392,7 @@ If you encounter other problems, please `make an issue on Github <https://github
 
 .. tip::
 
-    **Problem**: Using ``pytest`` to run tests leads to import errors `as discussed here <https://github.com/PlasmaControl/DESC/issues/1859>`__.
+    **Problem**: Using ``pytest`` to run tests leads to import errors `as discussed here <https://github.com/unalmis/DESC/issues/1859>`__.
 
     **Solution**:
     This issue occurs because ``pip`` is an imperfect package manager, and the packages

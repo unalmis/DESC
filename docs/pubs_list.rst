@@ -17,7 +17,7 @@ Papers extending DESC functionality
 #. D.W. Dudt and E. Kolemen. (2020).
    *DESC: A stellarator equilibrium solver*.
    [`Physics of Plasmas <https://doi.org/10.1063/5.0020743>`__]
-   [`pdf <https://github.com/PlasmaControl/DESC/blob/master/publications/dudt2020/dudt2020desc.pdf>`__]
+   [`pdf <https://github.com/unalmis/DESC/blob/master/publications/dudt2020/dudt2020desc.pdf>`__]
 
 #. D. Panici, R. Conlin, D.W. Dudt, K.E. Unalmis, and E. Kolemen. (2023).
    *The DESC Stellarator Code Suite Part I: Quick and accurate equilibria computations*.
