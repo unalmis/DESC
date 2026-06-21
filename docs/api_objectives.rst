@@ -118,6 +118,7 @@ Free boundary / Single stage optimization
     :template: class.rst
 
     desc.objectives.BoundaryError
+    desc.objectives.FreeSurfaceError
     desc.objectives.VacuumBoundaryError
 
 
