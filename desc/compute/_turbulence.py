@@ -23,7 +23,7 @@ from quadax import quadgk
 from desc.backend import jit, jnp
 
 from ..integrals.bounce_integral import Bounce2D, Options
-from ..utils import safediv, warnif
+from ..utils import safediv
 from ._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
 from .data_index import register_compute_fun
 
@@ -182,8 +182,9 @@ def _energy_quad(num_energy):
     binormal_scale="float : Multiplier for the binormal correlation length.",
     quad_atol=(
         "float : Absolute tolerance for adaptive energy quadrature. "
-        "If False, then this is interpreted as a flag to use a fixed quadrature, "
-        "which is faster, but less accurate."
+        "If ``quad_atol=0.0``, then this is interpreted as a flag to use a fixed "
+        "quadrature, which is faster, but less accurate. "
+        "Default is 1e-6."
     ),
     quad_rtol="float : Relative tolerance for adaptive energy quadrature.",
     energy_quad="tuple : Optional nodes and weights for fixed energy quadrature.",
@@ -217,12 +218,6 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
 
     """
     # noqa: unused dependency
-    warnif(
-        kwargs.get("pitch_batch_size", None) is not None,
-        msg="The option pitch_batch_size is ignored by available energy.\n"
-        "Make an issue to request for this feature if memory usage is too high.\n",
-    )
-
     radial_scale = kwargs.get("radial_scale", 1.0)
     binormal_scale = kwargs.get("binormal_scale", 1.0)
     atol = kwargs.get("quad_atol", 1e-6)
