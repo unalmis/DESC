@@ -10,6 +10,7 @@ from desc.compute._laplace import Options as LaplaceOptions
 from desc.compute.utils import _compute as compute_fun
 from desc.grid import LinearGrid
 from desc.integrals import get_interpolator, virtual_casing_biot_savart
+from desc.integrals.zeta import ZetaPlan
 from desc.io import IOAble
 from desc.nestor import Nestor
 from desc.objectives.objective_funs import _Objective, collect_docs
@@ -975,6 +976,7 @@ class FreeSurfaceError(_Objective):
         "_grad_keys",
         "_inner_keys",
         "_reuseable_keys",
+        "_zeta_plan",
     ]
 
     _coordinates = "rtz"
@@ -1064,6 +1066,7 @@ class FreeSurfaceError(_Objective):
         self._q = q
         self._fix_I_sheet = fix_I_sheet
         self._use_dft = use_dft
+        self._zeta_plan = None
         I_sheet = _FreeSurfaceSheetCurrent()
         if options is None:
             options = LaplaceOptions()
@@ -1155,6 +1158,28 @@ class FreeSurfaceError(_Objective):
         # No net poloidal current in equation 4.13 of [1].
         self._field.Y = 0.0 if self._is_neumann else data["Y_coil"]
         profiles = get_profiles(self._inner_keys, eq, grid=self._eval_grid)
+
+        self._zeta_plan = None
+        if options.quadrature == "zeta":
+            source_metric_data = (
+                None
+                if options.zeta_epstein_cutoff > 0
+                else eq.compute(["g_tt", "g_tz", "g_zz"], grid=self._grid)
+            )
+            epstein_cutoff = ZetaPlan.resolve_epstein_cutoff(
+                options.zeta_epstein_cutoff,
+                source_metric_data,
+                self._grid,
+            )
+            self._zeta_plan = ZetaPlan.from_grid(
+                self._grid,
+                "dipole_plus_half",
+                order=options.zeta_order,
+                chunk_size=options.chunk_size,
+                epstein_cutoff=epstein_cutoff,
+                metric_interpolation=options.zeta_metric_interpolation,
+            )
+
         initial_guess = self._compute_initial_guess(
             eq,
             source_transforms,
@@ -1173,6 +1198,7 @@ class FreeSurfaceError(_Objective):
             "profiles": profiles,
             "initial_guess": initial_guess,
             "quad_weights": np.sqrt(eval_transforms["grid"].weights),
+            "zeta_plan": self._zeta_plan,
         }
         self._dim_f = self._eval_grid.num_nodes
 
@@ -1250,6 +1276,7 @@ class FreeSurfaceError(_Objective):
             profiles,
             data=data,
             options=options._replace(solve_method="gmres"),
+            zeta_plan=self._zeta_plan,
             B_coil=self._B_coil,
             field_grid=self._coil_grid,
         )
@@ -1284,6 +1311,7 @@ class FreeSurfaceError(_Objective):
         options = LaplaceOptions(*self._options)._replace(
             Phi_0=constants["initial_guess"]
         )
+        zeta_plan = constants["zeta_plan"] if options.quadrature == "zeta" else None
 
         inner = compute_fun(
             eq,
@@ -1310,6 +1338,7 @@ class FreeSurfaceError(_Objective):
                 constants["profiles"],
                 data=outer,
                 options=options,
+                zeta_plan=zeta_plan,
                 B_coil=self._B_coil,
                 field_grid=self._coil_grid,
             )
@@ -1322,6 +1351,7 @@ class FreeSurfaceError(_Objective):
                 constants["profiles"],
                 data=outer,
                 options=options,
+                zeta_plan=zeta_plan,
                 B_coil=self._B_coil,
                 field_grid=self._coil_grid,
             )
@@ -1361,6 +1391,7 @@ class FreeSurfaceError(_Objective):
                     constants["profiles"],
                     data=data,
                     options=options,
+                    zeta_plan=zeta_plan,
                     B_coil=self._B_coil,
                     field_grid=self._coil_grid,
                 )
@@ -1374,6 +1405,7 @@ class FreeSurfaceError(_Objective):
                 constants["profiles"],
                 data=data,
                 options=options,
+                zeta_plan=zeta_plan,
                 B_coil=self._B_coil,
                 field_grid=self._coil_grid,
             )["Phi_mn"]
@@ -1386,6 +1418,7 @@ class FreeSurfaceError(_Objective):
             constants["profiles"],
             data=outer,
             options=options,
+            zeta_plan=zeta_plan,
             B_coil=self._B_coil,
             field_grid=self._coil_grid,
         )

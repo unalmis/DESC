@@ -32,6 +32,11 @@ from desc.integrals.singularities import (
     get_interpolator,
     singular_integral,
 )
+from desc.integrals.zeta import (
+    ZetaPlan,
+    zeta_apply_correction_weights,
+    zeta_correction_weights,
+)
 from desc.utils import cross, dot, errorif
 
 from .data_index import register_compute_fun
@@ -105,6 +110,40 @@ class Options(NamedTuple):
     singularities. Default is ``False``.
     """
 
+    quadrature: str = "singular"
+    """Quadrature used for repeated iterative double-layer applications.
+
+    One of ``"zeta"`` or ``"singular"``. The ``"zeta"`` path precomputes
+    geometry-dependent local correction weights for the current geometry. Each
+    Krylov matvec recomputes the punctured trapezoid sum and reuses those local
+    weights. Direct spectral-coefficient solves are not supported for ``"zeta"``.
+    Default is ``"singular"``.
+    """
+
+    zeta_order: int = 9
+    """Algebraic order of the zeta correction.
+
+    One of ``3``, ``5``, ``7``, or ``9``. Lower orders use smaller local
+    stencils and fewer Epstein-zeta derivatives during geometry updates.
+    """
+
+    zeta_epstein_cutoff: int = 0
+    """Epstein zeta disk cutoff.
+
+    Positive values use that fixed cutoff. Non-positive values use the
+    Wu-Martinsson metric-dependent cutoff when possible and fall back to 12 when
+    geometry values are traced by JAX.
+    """
+
+    zeta_metric_interpolation: int = ZetaPlan.DEFAULT_METRIC_INTERPOLATION
+    """Metric-shape interpolation table size for zeta correction weights.
+
+    Values greater than or equal to ``2`` tabulate intrinsic zeta weights on a
+    square normalized metric-shape grid and interpolate during geometry updates.
+    The default is chosen to give roughly 1e-4 absolute accuracy in the local
+    correction weights.
+    """
+
 
 def _check_solve_method(solve_method):
     """Check that a scalar potential solve method is valid."""
@@ -115,6 +154,35 @@ def _check_solve_method(solve_method):
             f"or 'direct', got {solve_method!r}."
         ),
     )
+
+
+def _check_quadrature(options):
+    """Check that Laplace quadrature options are valid."""
+    errorif(
+        options.quadrature not in {"zeta", "singular"},
+        msg=(
+            "quadrature must be one of 'zeta' or 'singular', "
+            f"got {options.quadrature!r}."
+        ),
+    )
+    if options.quadrature == "zeta":
+        errorif(
+            options.zeta_order not in ZetaPlan.ORDERS,
+            msg="zeta_order must be one of {3, 5, 7, 9} when quadrature='zeta'.",
+        )
+        errorif(
+            options.zeta_metric_interpolation < 2,
+            msg=(
+                "zeta_metric_interpolation must be an integer >= 2 when "
+                "quadrature='zeta'."
+            ),
+        )
+        errorif(
+            options.solve_method == "direct",
+            msg="zeta quadrature only supports iterative node-space solves; set "
+            "solve_method to 'gmres', 'bicgstab', or 'fixed_point' instead of "
+            "'direct'.",
+        )
 
 
 def _D_plus_half(
@@ -237,18 +305,30 @@ def _direct_solve(
 
 @eqx.filter_jit
 def _iterative_solve(
-    boundary_condition, potential_data, source_data, interpolator, options
+    boundary_condition,
+    potential_data,
+    source_data,
+    interpolator,
+    options,
+    zeta_plan,
+    zeta_correction=None,
 ):
     potential_grid = interpolator.eval_grid
     source_grid = interpolator.source_grid
 
-    potential_data, source_data = _prune_data(
-        potential_data,
-        potential_grid,
-        source_data,
-        source_grid,
-        _kernel_dipole_plus_half,
-    )
+    use_zeta_matvec = options.quadrature == "zeta"
+    if use_zeta_matvec:
+        potential_data, source_data = _prune_zeta_dlp_apply_data(
+            potential_data, source_data
+        )
+    else:
+        potential_data, source_data = _prune_data(
+            potential_data,
+            potential_grid,
+            source_data,
+            source_grid,
+            _kernel_dipole_plus_half,
+        )
     Phi_0 = options.Phi_0
     if Phi_0 is None:
         Phi_0 = jnp.zeros(potential_grid.num_nodes)
@@ -257,17 +337,33 @@ def _iterative_solve(
     subtract_phi = options.problem in ("exterior Neumann", "interior Dirichlet")
     solvers = {"gmres": lx.GMRES, "bicgstab": lx.BiCGStab}
     if options.solve_method in solvers:
-        operator = lx.FunctionLinearOperator(
-            partial(
+        if use_zeta_matvec:
+            matvec = partial(
+                _linear_potential_operator_zeta,
+                potential_data=potential_data,
+                source_data=source_data,
+                interpolator=interpolator,
+                subtract_phi=subtract_phi,
+                zeta_plan=zeta_plan,
+                zeta_correction=zeta_correction,
+            )
+            operator = lx.FunctionLinearOperator(
+                matvec,
+                jax.ShapeDtypeStruct(Phi_0.shape, Phi_0.dtype),
+            )
+        else:
+            matvec = partial(
                 _linear_potential_operator,
                 potential_data=potential_data,
                 source_data=source_data,
                 interpolator=interpolator,
                 chunk_size=options.chunk_size,
                 subtract_phi=subtract_phi,
-            ),
-            jax.ShapeDtypeStruct(Phi_0.shape, Phi_0.dtype),
-        )
+            )
+            operator = lx.FunctionLinearOperator(
+                matvec,
+                jax.ShapeDtypeStruct(Phi_0.shape, Phi_0.dtype),
+            )
         solution = lx.linear_solve(
             operator,
             boundary_condition,
@@ -286,17 +382,31 @@ def _iterative_solve(
 
     # Some JAX versions fail to transpose scan, so we keep fixed point.
     xi = 2 / 3
-    args = (
-        boundary_condition,
-        potential_data,
-        source_data,
-        interpolator,
-        options.chunk_size,
-        xi,
-        subtract_phi,
-    )
+    if use_zeta_matvec:
+        args = (
+            boundary_condition,
+            potential_data,
+            source_data,
+            interpolator,
+            xi,
+            subtract_phi,
+            zeta_plan,
+            zeta_correction,
+        )
+        iteration_operator = _iteration_operator_zeta
+    else:
+        args = (
+            boundary_condition,
+            potential_data,
+            source_data,
+            interpolator,
+            options.chunk_size,
+            xi,
+            subtract_phi,
+        )
+        iteration_operator = _iteration_operator
     solution = optx.fixed_point(
-        _iteration_operator,
+        iteration_operator,
         optx.FixedPointIteration(rtol=options.rtol, atol=options.atol),
         Phi_0,
         args,
@@ -311,8 +421,18 @@ def _iterative_solve(
         throw=False,
     )
     if options.full_output:
-        err = jnp.abs(
-            _linear_potential_operator(
+        if use_zeta_matvec:
+            residual = _linear_potential_operator_zeta(
+                solution.value,
+                potential_data,
+                source_data,
+                interpolator,
+                subtract_phi,
+                zeta_plan,
+                zeta_correction,
+            )
+        else:
+            residual = _linear_potential_operator(
                 solution.value,
                 potential_data,
                 source_data,
@@ -320,10 +440,53 @@ def _iterative_solve(
                 options.chunk_size,
                 subtract_phi,
             )
-            - boundary_condition
-        ).max()
+        err = jnp.abs(residual - boundary_condition).max()
         return solution.value, (err, solution.stats["num_steps"])
     return solution.value
+
+
+def _prune_zeta_dlp_apply_data(potential_data, source_data):
+    """Keep only same-grid zeta DLP apply data."""
+    eval_keys = ("R", "phi", "Z")
+    source_keys = eval_keys + ("e_theta x e_zeta",)
+    potential_data = {
+        key: potential_data[key] for key in eval_keys if key in potential_data
+    }
+    source_data = {key: source_data[key] for key in source_keys if key in source_data}
+    return potential_data, source_data
+
+
+def _require_zeta_D_plus_half(interpolator, plan, options):
+    """Validate prerequisites for zeta precomputation."""
+    potential_grid = interpolator.eval_grid
+    source_grid = interpolator.source_grid
+    assert options.quadrature == "zeta"
+    assert not options.D_quad
+    assert potential_grid.can_fft2 and source_grid.can_fft2
+    assert potential_grid.num_nodes == plan.num_nodes
+    assert source_grid.num_nodes == plan.num_nodes
+    assert potential_grid.num_theta == plan.num_theta
+    assert potential_grid.num_zeta == plan.num_zeta
+    assert potential_grid.NFP == plan.NFP
+    assert source_grid.num_theta == plan.num_theta
+    assert source_grid.num_zeta == plan.num_zeta
+    assert source_grid.NFP == plan.NFP
+
+
+def _precompute_zeta_correction(
+    potential_data,
+    source_data,
+    interpolator,
+    options,
+    zeta_plan,
+):
+    """Return precomputed zeta local correction weights for the current geometry."""
+    _require_zeta_D_plus_half(interpolator, zeta_plan, options)
+    return zeta_correction_weights(
+        potential_data,
+        source_data,
+        zeta_plan,
+    )
 
 
 def _iteration_operator(Phi, args):
@@ -355,6 +518,34 @@ def _iteration_operator(Phi, args):
     return out
 
 
+def _iteration_operator_zeta(Phi, args):
+    """Fixed-point iteration using precomputed zeta local correction weights."""
+    (
+        rhs,
+        potential_data,
+        source_data,
+        interpolator,
+        xi,
+        subtract_phi,
+        zeta_plan,
+        zeta_correction,
+    ) = args
+    out = _linear_potential_operator_zeta(
+        Phi,
+        potential_data,
+        source_data,
+        interpolator,
+        False,
+        zeta_plan,
+        zeta_correction,
+    )
+    if subtract_phi:
+        out = ((xi - 1) * Phi + out - rhs) / xi
+    else:
+        out = (xi * Phi - out + rhs) / xi
+    return out
+
+
 def _linear_potential_operator(
     Phi, potential_data, source_data, interpolator, chunk_size, subtract_phi
 ):
@@ -369,6 +560,31 @@ def _linear_potential_operator(
         interpolator,
         chunk_size=chunk_size,
         prune_data=False,
+    )
+    if subtract_phi:
+        out -= Phi
+    return out
+
+
+def _linear_potential_operator_zeta(
+    Phi,
+    potential_data,
+    source_data,
+    interpolator,
+    subtract_phi,
+    zeta_plan,
+    zeta_correction,
+):
+    """Equation solved by the iterative linear solver using zeta quadrature."""
+    potential_data["Phi(x) (periodic)"] = Phi
+    source_data["Phi (periodic)"] = _interp(
+        Phi, interpolator.eval_grid, interpolator.source_grid
+    )
+    out = zeta_apply_correction_weights(
+        potential_data,
+        source_data,
+        zeta_plan,
+        zeta_correction,
     )
     if subtract_phi:
         out -= Phi
@@ -497,7 +713,7 @@ def _S_B0_n(params, transforms, profiles, data, **kwargs):
     transforms={"Phi": [[0, 0, 0]]},
     profiles=[],
     data=list(set(_kernel_dipole_plus_half.keys) - {"Phi (periodic)"})
-    + ["S[B0*n]", "interpolator"],
+    + ["S[B0*n]", "interpolator", "g_tt", "g_tz", "g_zz"],
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
@@ -506,7 +722,10 @@ def _S_B0_n(params, transforms, profiles, data, **kwargs):
 def _scalar_potential_mn_Neumann(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
     options = kwargs.get("options", Options())
+    zeta_plan = kwargs["zeta_plan"] if options.quadrature == "zeta" else None
+    zeta_correction = None
     _check_solve_method(options.solve_method)
+    _check_quadrature(options)
 
     if options.solve_method == "direct":
         data["Phi_mn"] = _direct_solve(
@@ -518,12 +737,23 @@ def _scalar_potential_mn_Neumann(params, transforms, profiles, data, **kwargs):
             options,
         )
     else:
+        if options.quadrature == "zeta":
+            errorif(zeta_plan is None, msg="zeta quadrature requires zeta_plan.")
+            zeta_correction = _precompute_zeta_correction(
+                data.get("potential data", data),
+                data,
+                data["interpolator"],
+                options,
+                zeta_plan=zeta_plan,
+            )
         data["Phi (periodic)"] = _iterative_solve(
             data["S[B0*n]"],
             data.get("potential data", data),
             data,
             data["interpolator"],
             options,
+            zeta_plan,
+            zeta_correction,
         )
         if options.full_output:
             data["Phi (periodic)"], (data["Phi error"], data["num_steps"]) = data[
@@ -1090,7 +1320,7 @@ def _Phi_coil(params, transforms, profiles, data, **kwargs):
     transforms={"Phi": [[0, 0, 0]]},
     profiles=[],
     data=list(set(_kernel_dipole_plus_half.keys) - {"Phi (periodic)"})
-    + ["Phi_coil (periodic)", "S[B0*n]", "interpolator"],
+    + ["Phi_coil (periodic)", "S[B0*n]", "interpolator", "g_tt", "g_tz", "g_zz"],
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
@@ -1099,7 +1329,10 @@ def _Phi_coil(params, transforms, profiles, data, **kwargs):
 def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
     options = kwargs.get("options", Options())._replace(problem="interior Dirichlet")
+    zeta_plan = kwargs["zeta_plan"] if options.quadrature == "zeta" else None
+    zeta_correction = None
     _check_solve_method(options.solve_method)
+    _check_quadrature(options)
 
     boundary_condition = data["S[B0*n]"] - data["Phi_coil (periodic)"]
     if options.solve_method == "direct":
@@ -1112,12 +1345,23 @@ def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwar
             options,
         )
     else:
+        if options.quadrature == "zeta":
+            errorif(zeta_plan is None, msg="zeta quadrature requires zeta_plan.")
+            zeta_correction = _precompute_zeta_correction(
+                data.get("potential data", data),
+                data,
+                data["interpolator"],
+                options,
+                zeta_plan=zeta_plan,
+            )
         data["Phi (periodic)"] = _iterative_solve(
             boundary_condition,
             data.get("potential data", data),
             data,
             data["interpolator"],
             options,
+            zeta_plan,
+            zeta_correction,
         )
         if options.full_output:
             data["Phi (periodic)"], (data["Phi error"], data["num_steps"]) = data[
@@ -1140,7 +1384,7 @@ def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwar
     params=[],
     transforms={},
     profiles=[],
-    data=_kernel_dipole_plus_half.keys + ["interpolator"],
+    data=_kernel_dipole_plus_half.keys + ["interpolator", "g_tt", "g_tz", "g_zz"],
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
@@ -1150,13 +1394,37 @@ def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwar
 def _gamma_potential(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
     options = kwargs.get("options", Options())
+    _check_quadrature(options)
     data["Phi(x) (periodic)"] = data["Phi (periodic)"]
     # Left hand side of equation 5.15 in [1]_ computed by evaluating
     # the right hand side. This is used for testing.
-    data["γ potential"] = data["Phi (periodic)"] - _D_plus_half(
-        data,
-        data,
-        data["interpolator"],
-        chunk_size=options.chunk_size,
-    )
+    if options.quadrature == "zeta":
+        zeta_plan = kwargs.get("zeta_plan")
+        errorif(
+            zeta_plan is None,
+            msg="zeta quadrature requires zeta_plan from objective constants.",
+        )
+        zeta_correction = kwargs.get("zeta_correction")
+        if zeta_correction is None:
+            zeta_correction = _precompute_zeta_correction(
+                data.get("potential data", data),
+                data,
+                data["interpolator"],
+                options,
+                zeta_plan=zeta_plan,
+            )
+        D_plus_half = zeta_apply_correction_weights(
+            data,
+            data,
+            zeta_plan,
+            zeta_correction,
+        )
+    else:
+        D_plus_half = _D_plus_half(
+            data,
+            data,
+            data["interpolator"],
+            chunk_size=options.chunk_size,
+        )
+    data["γ potential"] = data["Phi (periodic)"] - D_plus_half
     return data

@@ -58,9 +58,12 @@ from desc.integrals.singularities import (
     _G,
     _grad_G,
     _kernel_BS_plus_grad_S,
+    _kernel_dipole,
+    _kernel_dipole_plus_half,
     _kernel_nr_over_r3,
 )
 from desc.integrals.surface_integral import _get_grid_surface
+from desc.integrals.zeta import EpsteinZeta, ZetaPlan, zeta_integral
 from desc.magnetic_fields import FreeSurfaceOuterField
 from desc.magnetic_fields import Options as LaplaceOptions
 from desc.magnetic_fields import SourceFreeField, ToroidalMagneticField
@@ -624,6 +627,195 @@ class TestSingularities:
         _f = f(s_grid.nodes[:, 1], s_grid.nodes[:, 2])
         for i in range(dt.size):
             np.testing.assert_allclose(interp(_f, i), f(theta + dt[i], zeta + dz[i]))
+
+    @pytest.mark.unit
+    def test_zeta_epstein_derivatives_match_autodiff(self):
+        """Test the recurrence used for high-order zeta corrections."""
+        E = jnp.asarray([1.3, 2.0])
+        F = jnp.asarray([0.2, -0.1])
+        G = jnp.asarray([1.7, 1.1])
+        s = -3
+        degree = 3
+        cutoff = 8
+
+        actual = np.asarray(EpsteinZeta.deriv(s, degree, E, F, G, cutoff))
+        expected = []
+        for ell in range(degree + 1):
+            partial = EpsteinZeta.partial(s, (degree - ell, ell, 0), cutoff)
+            expected.append(0.5**ell * partial(E, F, G))
+        for ell in range(degree + 1, 2 * degree + 1):
+            partial = EpsteinZeta.partial(
+                s,
+                (0, 2 * degree - ell, ell - degree),
+                cutoff,
+            )
+            expected.append(0.5 ** (2 * degree - ell) * partial(E, F, G))
+        expected = np.asarray(expected)
+
+        np.testing.assert_allclose(actual, expected, rtol=2e-11, atol=2e-11)
+
+    @pytest.mark.unit
+    @pytest.mark.slow
+    def test_zeta_integral_greens_id_sampled_high_order(self):
+        """Test that order-9 zeta corrections reach paper-level Green ID error."""
+        eq = Equilibrium()
+        grid = LinearGrid(M=40, N=360, NFP=eq.NFP)
+        data = eq.compute(_kernel_nr_over_r3.keys + ["g_tt", "g_tz", "g_zz"], grid=grid)
+        theta_idx = np.asarray(grid.inverse_theta_idx)
+        zeta_idx = np.asarray(grid.inverse_zeta_idx)
+        target_idx = [
+            int(np.flatnonzero((theta_idx == idx) & (zeta_idx == 0))[0])
+            for idx in [0, 20, 40, 60, 80]
+        ]
+
+        err = zeta_integral(
+            data,
+            data,
+            ZetaPlan.from_grid(
+                grid,
+                "nr_over_r3",
+                order=9,
+                chunk_size=0,
+                epstein_cutoff=12,
+                metric_interpolation=0,
+            ),
+        )[jnp.asarray(target_idx)]
+        np.testing.assert_array_less(
+            np.abs(2 * np.pi + np.asarray(err).squeeze()).max(), 1e-9
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.slow
+    @pytest.mark.parametrize(
+        "zeta_kernel,singular_kernel",
+        [
+            ("dipole", _kernel_dipole),
+            ("dipole_plus_half", _kernel_dipole_plus_half),
+        ],
+    )
+    def test_zeta_dipole_correction_matches_singular_on_resolved_grid(
+        self, zeta_kernel, singular_kernel
+    ):
+        """Test order-9 DLP zeta correction against Malhotra quadrature."""
+        surface = FourierRZToroidalSurface(
+            R_lmn=[10, 1, 0.2],
+            Z_lmn=[-1, -0.2],
+            modes_R=[[0, 0], [1, 0], [2, 0]],
+            modes_Z=[[-1, 0], [-2, 0]],
+            NFP=5,
+        )
+        grid = LinearGrid(M=12, N=12, NFP=surface.NFP)
+        keys = list(
+            (
+                set(_kernel_dipole_plus_half.keys + _kernel_dipole_plus_half.eval_keys)
+                | {"g_tt", "g_tz", "g_zz"}
+            )
+            - {"Phi (periodic)", "Phi(x) (periodic)"}
+        )
+        data = surface.compute(keys, grid=grid)
+        data["theta"] = jnp.asarray(grid.nodes[:, 1])
+        data["zeta"] = jnp.asarray(grid.nodes[:, 2])
+        data["Phi (periodic)"] = data["Z"] + 0.05 * jnp.cos(
+            2 * data["theta"] - 3 * surface.NFP * data["zeta"]
+        )
+        data["Phi(x) (periodic)"] = data["Phi (periodic)"]
+
+        theta_idx = np.asarray(grid.inverse_theta_idx)
+        zeta_idx = np.asarray(grid.inverse_zeta_idx)
+        target_idx = np.asarray(
+            [
+                int(np.flatnonzero((theta_idx == idx) & (zeta_idx == 0))[0])
+                for idx in [0, 6, 12, 18, 24]
+            ]
+        )
+        eval_grid = LinearGrid(
+            theta=np.asarray(grid.nodes[target_idx, 1]),
+            zeta=[0.0],
+            NFP=surface.NFP,
+        )
+        eval_data = {
+            key: (
+                val[target_idx]
+                if getattr(val, "ndim", 0) > 0 and val.shape[0] == grid.num_nodes
+                else val
+            )
+            for key, val in data.items()
+        }
+        interpolator = DFTInterpolator(eval_grid, grid, 25, 25, 20)
+
+        singular = singular_integral(
+            eval_data, data, interpolator, singular_kernel, chunk_size=20
+        ).squeeze(-1)
+        zeta = zeta_integral(
+            data,
+            data,
+            ZetaPlan.from_grid(
+                grid,
+                zeta_kernel,
+                order=9,
+                chunk_size=0,
+                epstein_cutoff=12,
+                metric_interpolation=0,
+            ),
+        )[jnp.asarray(target_idx)]
+        np.testing.assert_allclose(zeta, singular, rtol=1e-5, atol=2e-4)
+
+    @pytest.mark.unit
+    def test_zeta_metric_interpolation_matches_exact_low_order(self):
+        """Test normalized metric-shape interpolation for low-order zeta weights."""
+        surface = FourierRZToroidalSurface(
+            R_lmn=[10, 1, 0.2],
+            Z_lmn=[-1, -0.2],
+            modes_R=[[0, 0], [1, 0], [2, 0]],
+            modes_Z=[[-1, 0], [-2, 0]],
+            NFP=5,
+        )
+        grid = LinearGrid(M=8, N=8, NFP=surface.NFP)
+        keys = list(
+            (
+                set(_kernel_dipole_plus_half.keys + _kernel_dipole_plus_half.eval_keys)
+                | {"g_tt", "g_tz", "g_zz"}
+            )
+            - {"Phi (periodic)", "Phi(x) (periodic)"}
+        )
+        data = surface.compute(keys, grid=grid)
+        data["theta"] = jnp.asarray(grid.nodes[:, 1])
+        data["zeta"] = jnp.asarray(grid.nodes[:, 2])
+        data["Phi (periodic)"] = data["Z"] + 0.05 * jnp.cos(
+            2 * data["theta"] - 3 * surface.NFP * data["zeta"]
+        )
+        data["Phi(x) (periodic)"] = data["Phi (periodic)"]
+
+        theta_idx = np.asarray(grid.inverse_theta_idx)
+        zeta_idx = np.asarray(grid.inverse_zeta_idx)
+        target_idx = np.asarray(
+            [
+                int(np.flatnonzero((theta_idx == idx) & (zeta_idx == 0))[0])
+                for idx in [0, 4, 8, 12]
+            ]
+        )
+        exact_plan = ZetaPlan.from_grid(
+            grid,
+            "dipole_plus_half",
+            order=3,
+            chunk_size=0,
+            epstein_cutoff=8,
+            metric_interpolation=0,
+        )
+        exact = zeta_integral(
+            data,
+            data,
+            exact_plan,
+        )[jnp.asarray(target_idx)]
+        interp_plan = ZetaPlan.from_grid(
+            grid, "dipole_plus_half", order=3, chunk_size=0, epstein_cutoff=8
+        )
+        interp = zeta_integral(
+            data,
+            data,
+            interp_plan,
+        )[jnp.asarray(target_idx)]
+        np.testing.assert_allclose(interp, exact, rtol=1e-3, atol=1e-5)
 
     @pytest.mark.unit
     def test_singular_integral_greens_id(self):
