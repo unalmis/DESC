@@ -2,9 +2,10 @@
 
 Profiling requires python < 3.14.
   - pip install xprof tensorboard tensorboard_plugin_profile
+  - pip install 'setuptools < 82'
   - cd DESC/publications/unalmis2025
   - python free_surface_error_profile.py
-  - tensorboard --logdir=/tmp/profile-data
+  - xprof --port=8791 ./profile-data
 
 """
 
