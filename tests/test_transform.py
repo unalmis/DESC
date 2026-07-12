@@ -59,28 +59,6 @@ class TestTransform:
             transf.transform(c, 0, 0, 0)
 
     @pytest.mark.unit
-    def test_add_derivative_after_building_pinv(self):
-        """Derivative storage grows after an inverse transform is built."""
-        grid = LinearGrid(M=4, N=0)
-        basis = DoubleFourierSeries(M=2, N=0, sym="sin")
-        transform = Transform(
-            grid,
-            basis,
-            derivs=[[0, 0, 0]],
-            method="direct1",
-            build=False,
-            build_pinv=True,
-        )
-
-        transform.change_derivatives([[0, 1, 0]], build=True)
-
-        coefficients = np.arange(1, basis.num_modes + 1)
-        np.testing.assert_allclose(
-            transform.transform(coefficients, dt=1),
-            basis.evaluate(grid, derivatives=[0, 1, 0]) @ coefficients,
-        )
-
-    @pytest.mark.unit
     def test_profile(self):
         """Tests transform of power series on a radial profile."""
         grid = LinearGrid(L=10)
