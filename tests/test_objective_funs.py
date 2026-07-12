@@ -2266,7 +2266,7 @@ class TestObjectiveFunction:
         B_I = obj._normalize_toroidal_current_field(B_I_unit, field_params["I"], inner)
         outer_data["B0*n"] = obj._phi_sec_dot_n(field_params, inner, B_I=B_I)
         outer, _ = field.compute(
-            "K_vc (periodic)",
+            "K_vc",
             grid=grid,
             params=field_params,
             transforms=obj._constants["eval_transforms"],
@@ -2274,18 +2274,18 @@ class TestObjectiveFunction:
             override_grid=False,
             options=LaplaceOptions(*obj._options)._replace(
                 solve_method=solve_method,
-                Phi_0=obj._constants["initial_guess"],
+                Phi_tilde_0=obj._constants["initial_guess"],
             ),
             B_coil=B,
         )
-        outer["K_vc"] = outer["K_vc (periodic)"] + jnp.cross(
+        outer["B x n"] = outer["K_vc"] + jnp.cross(
             B_I + field_params["Y"] * inner["grad(phi)"],
             inner["n_rho"],
         )
-        outer["|K_vc|^2"] = jnp.sum(outer["K_vc"] ** 2, axis=-1)
-        expected = (outer["|K_vc|^2"] - inner["|B|^2"] - 2 * mu_0 * inner["p"]) * inner[
-            "|e_theta x e_zeta|"
-        ]
+        outer["|B x n|^2"] = jnp.sum(outer["B x n"] ** 2, axis=-1)
+        expected = (
+            outer["|B x n|^2"] - inner["|B|^2"] - 2 * mu_0 * inner["p"]
+        ) * inner["|e_theta x e_zeta|"]
 
         np.testing.assert_allclose(
             obj.compute(eq.params_dict, obj.things[1].params_dict), expected

@@ -204,10 +204,9 @@ class SourceFreeField(FourierRZToroidalSurface):
 
     Let 𝒳 be an open set with continuously differentiable
     closed boundary ∂𝒳. This class solves the following
-    partial differential equation for
-    varphi = φ = Φ (periodic) = ``Phi (periodic)``.
-    The legacy compute names ``Phi (periodic)`` and ``Phi`` both denote this
-    single-valued remainder; physical period fields are carried by ``B0``.
+    partial differential equation for the globally defined harmonic remainder
+    ϕ, represented in the solver by ``Phi_tilde``. The physical harmonic
+    field carrying the prescribed periods is ``B0``.
 
     -                  ∆φ(x) = 0   x ∈ 𝒳
     -       (B - ∇φ - B₀)(x) = 0   x ∈ 𝒳
@@ -230,8 +229,8 @@ class SourceFreeField(FourierRZToroidalSurface):
         the globally defined part of ``B0`` produces an NFP periodic
         field.
     sym : str
-        Symmetry for Fourier basis interpolating the periodic part of the
-        potential. Default is ``sin`` when the surface is stellarator
+        Symmetry for the Fourier basis interpolating the globally defined
+        potential remainder. Default is ``sin`` when the surface is stellarator
         symmetric and ``False`` otherwise. Pass ``False`` explicitly when the
         boundary data do not share the surface symmetry.
     B0 : _MagneticField
@@ -250,10 +249,10 @@ class SourceFreeField(FourierRZToroidalSurface):
 
     """
 
-    _io_attrs_ = ["_surface", "_Phi_basis", "_B0", "_I", "_Y"]
+    _io_attrs_ = ["_surface", "_Phi_tilde_basis", "_B0", "_I", "_Y"]
     _immediate_attributes_ = [
         "_surface",
-        "_Phi_basis",
+        "_Phi_tilde_basis",
         "_B0",
         "_I",
         "_Y",
@@ -274,7 +273,7 @@ class SourceFreeField(FourierRZToroidalSurface):
     ):
         self._surface = surface
         sym = setdefault(sym, "sin" if surface.sym else False)
-        self._Phi_basis = DoubleFourierSeries(
+        self._Phi_tilde_basis = DoubleFourierSeries(
             M=M,
             N=N,
             NFP=setdefault(NFP, surface.NFP),
@@ -346,24 +345,24 @@ class SourceFreeField(FourierRZToroidalSurface):
             self._B0.Y = self._Y
 
     @property
-    def Phi_basis(self):
-        """DoubleFourierSeries: Basis for periodic part of potential."""
-        return self._Phi_basis
+    def Phi_tilde_basis(self):
+        """DoubleFourierSeries: Basis for the globally defined potential remainder."""
+        return self._Phi_tilde_basis
 
     @property
-    def sym_Phi(self):
-        """str: Type of symmetry of periodic part of Phi (no symmetry if False)."""
-        return self._Phi_basis.sym
+    def sym_Phi_tilde(self):
+        """str: Symmetry of the potential remainder (no symmetry if False)."""
+        return self._Phi_tilde_basis.sym
 
     @property
-    def M_Phi(self):
-        """int: Poloidal resolution of periodic part of Phi."""
-        return self._Phi_basis.M
+    def M_Phi_tilde(self):
+        """int: Poloidal resolution of the potential remainder."""
+        return self._Phi_tilde_basis.M
 
     @property
-    def N_Phi(self):
-        """int: Toroidal resolution of periodic part of Phi."""
-        return self._Phi_basis.N
+    def N_Phi_tilde(self):
+        """int: Toroidal resolution of the potential remainder."""
+        return self._Phi_tilde_basis.N
 
     def compute(
         self,
@@ -420,10 +419,12 @@ class SourceFreeField(FourierRZToroidalSurface):
 
         """
         errorif(
-            self.M_Phi > grid.M, msg=f"Got M_Phi = {self.M_Phi} > {grid.M} = grid.M."
+            self.M_Phi_tilde > grid.M,
+            msg=f"Got M_Phi_tilde = {self.M_Phi_tilde} > {grid.M} = grid.M.",
         )
         errorif(
-            self.N_Phi > grid.N, msg=f"Got N_Phi = {self.N_Phi} > {grid.N} = grid.N."
+            self.N_Phi_tilde > grid.N,
+            msg=f"Got N_Phi_tilde = {self.N_Phi_tilde} > {grid.N} = grid.N.",
         )
 
         if "B0" not in kwargs:
@@ -433,7 +434,7 @@ class SourceFreeField(FourierRZToroidalSurface):
                 if B0_params:
                     kwargs["B0_params"] = B0_params
 
-        # to simplify computation of a singular integral for ∇φ
+        # to simplify computation of the singular integral for B_remainder
         if kwargs.get("on_boundary", False) and "eval_interpolator" not in kwargs:
             if RpZ_grid is None:
                 errorif(RpZ_data is not None, msg="Please supply RpZ_grid.")
@@ -489,9 +490,9 @@ class FreeSurfaceOuterField(SourceFreeField):
 
     Implements the interior Dirichlet formulation in multiply connected
     geometry described in [1]_.
-    For this formulation, the inherited ``Phi (periodic)`` and ``Phi`` compute
-    names store the globally defined tilde-Phi remainder, while ``B0``
-    supplies the physical secular field.
+    For this formulation, ``Phi_tilde`` represents the globally
+    defined boundary density Φ̃ used in the Dirichlet integral equation, while
+    ``B0`` supplies the physical harmonic field carrying the prescribed periods.
 
     Parameters
     ----------
@@ -502,8 +503,8 @@ class FreeSurfaceOuterField(SourceFreeField):
     N : int
         Toroidal Fourier resolution to interpolate potential on ∂𝒳.
     sym : str
-        Symmetry for Fourier basis interpolating the periodic part of the
-        potential. Default is ``sin`` when the surface is stellarator
+        Symmetry for the Fourier basis interpolating the globally defined
+        boundary density. Default is ``sin`` when the surface is stellarator
         symmetric and ``False`` otherwise.
     M_coil : int
         Poloidal Fourier resolution to interpolate coil potential on ∂𝒳.
@@ -531,8 +532,8 @@ class FreeSurfaceOuterField(SourceFreeField):
 
     """
 
-    _io_attrs_ = SourceFreeField._io_attrs_ + ["_Phi_coil_basis", "_B_coil"]
-    _immediate_attributes_ = ["_Phi_coil_basis", "_B_coil"]
+    _io_attrs_ = SourceFreeField._io_attrs_ + ["_varphi_basis", "_B_coil"]
+    _immediate_attributes_ = ["_varphi_basis", "_B_coil"]
 
     def __init__(
         self,
@@ -562,9 +563,9 @@ class FreeSurfaceOuterField(SourceFreeField):
             Y_coil,
         )
         if M_coil is None and N_coil is None and sym_coil is None:
-            self._Phi_coil_basis = self._Phi_basis
+            self._varphi_basis = self._Phi_tilde_basis
         else:
-            self._Phi_coil_basis = DoubleFourierSeries(
+            self._varphi_basis = DoubleFourierSeries(
                 M=setdefault(M_coil, M),
                 N=setdefault(N_coil, N),
                 NFP=surface.NFP,
@@ -583,24 +584,24 @@ class FreeSurfaceOuterField(SourceFreeField):
             setattr(object.__getattribute__(self, "_surface"), name, value)
 
     @property
-    def Phi_coil_basis(self):
+    def varphi_basis(self):
         """DoubleFourierSeries: Basis for periodic part of coil potential."""
-        return self._Phi_coil_basis
+        return self._varphi_basis
 
     @property
-    def sym_Phi_coil(self):
-        """str: Symmetry of periodic part of Phi_coil (no symmetry if False)."""
-        return self._Phi_coil_basis.sym
+    def sym_varphi(self):
+        """str: Symmetry of periodic part of varphi (no symmetry if False)."""
+        return self._varphi_basis.sym
 
     @property
-    def M_Phi_coil(self):
-        """int: Poloidal resolution of periodic part of Phi_coil."""
-        return self._Phi_coil_basis.M
+    def M_varphi(self):
+        """int: Poloidal resolution of periodic part of varphi."""
+        return self._varphi_basis.M
 
     @property
-    def N_Phi_coil(self):
-        """int: Toroidal resolution of periodic part of Phi_coil."""
-        return self._Phi_coil_basis.N
+    def N_varphi(self):
+        """int: Toroidal resolution of periodic part of varphi."""
+        return self._varphi_basis.N
 
     def compute(
         self,
@@ -616,12 +617,12 @@ class FreeSurfaceOuterField(SourceFreeField):
     ):
         """Compute the quantity given by name on grid."""
         errorif(
-            self.M_Phi_coil > grid.M,
-            msg=f"Got M_Phi_coil = {self.M_Phi_coil} > {grid.M} = grid.M.",
+            self.M_varphi > grid.M,
+            msg=f"Got M_varphi = {self.M_varphi} > {grid.M} = grid.M.",
         )
         errorif(
-            self.N_Phi_coil > grid.N,
-            msg=f"Got N_Phi_coil = {self.N_Phi_coil} > {grid.N} = grid.N.",
+            self.N_varphi > grid.N,
+            msg=f"Got N_varphi = {self.N_varphi} > {grid.N} = grid.N.",
         )
         kwargs.setdefault("B_coil", self._B_coil)
         if self.Y is None and (params is None or params.get("Y", None) is None):

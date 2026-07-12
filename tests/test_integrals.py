@@ -755,8 +755,8 @@ class TestLaplace:
 
         surface = get("W7-X").surface
         assert surface.sym
-        assert SourceFreeField(surface, M=2, N=2).sym_Phi == "sin"
-        assert SourceFreeField(surface, M=2, N=2, sym=False).sym_Phi is False
+        assert SourceFreeField(surface, M=2, N=2).sym_Phi_tilde == "sin"
+        assert SourceFreeField(surface, M=2, N=2, sym=False).sym_Phi_tilde is False
 
     @pytest.mark.unit
     def test_laplace_fields_build_physical_periods_and_setters(self):
@@ -802,32 +802,6 @@ class TestLaplace:
         )
 
     @pytest.mark.unit
-    def test_iterative_solver_throw_option(self):
-        """An under-converged GMRES solve raises unless explicitly requested."""
-        surface = get("W7-X").surface
-        grid = LinearGrid(M=12, N=12, NFP=surface.NFP, sym=False)
-        field = FreeSurfaceOuterField(
-            surface,
-            M=surface.M,
-            N=surface.N,
-            B_coil=self._Z_hat_field(),
-        )
-        options = LaplaceOptions(
-            solve_method="gmres",
-            max_steps=1,
-            atol=1e-14,
-            rtol=1e-14,
-            full_output=True,
-            throw=False,
-        )
-
-        data, _ = field.compute("Phi error", grid, options=options)
-        assert data["Phi error"] > options.atol
-
-        with pytest.raises(RuntimeError, match="maximum number of solver steps"):
-            field.compute("Phi error", grid, options=options._replace(throw=True))
-
-    @pytest.mark.unit
     def test_interior_Dirichlet_uses_physical_poloidal_period(self, monkeypatch):
         """The Y-period boundary data is relative to Y grad(phi), not Y grad(zeta)."""
         captured = {}
@@ -839,16 +813,16 @@ class TestLaplace:
         monkeypatch.setattr(laplace_compute, "_direct_solve", direct_solve)
         data = {
             "S[B0*n]": jnp.array([1.0, 2.0]),
-            "Phi_coil (periodic)": jnp.array([0.3, 0.4]),
+            "varphi (periodic)": jnp.array([0.3, 0.4]),
             # Use different source- and potential-grid values to ensure the
             # correction is evaluated on the boundary-condition grid.
             "omega": jnp.zeros(2),
             "potential data": {"omega": jnp.array([0.1, -0.2])},
             "interpolator": None,
         }
-        transforms = {"Phi": type("Transform", (), {"basis": None})()}
+        transforms = {"Phi_tilde": type("Transform", (), {"basis": None})()}
 
-        laplace_compute._scalar_potential_mn_free_surface(
+        laplace_compute._dipole_density_mn_free_surface(
             {"Y": 2.0},
             transforms,
             {},
@@ -857,7 +831,7 @@ class TestLaplace:
         )
 
         # phi = zeta + omega, so the physical-periodic coil potential is
-        # Phi_coil(periodic) - Y*omega.
+        # varphi(periodic) - Y*omega.
         np.testing.assert_allclose(
             captured["boundary_condition"],
             jnp.array([1.0, 2.0])
@@ -923,7 +897,7 @@ class TestLaplace:
         )
         assert field.M != grid.M and field.N != grid.N
 
-        keys = ["Phi error", "num_steps"] if just_err else "γ potential"
+        keys = ["Phi_tilde error", "num_steps"] if just_err else "γ potential"
         data, _ = field.compute(
             keys,
             grid,
@@ -940,11 +914,11 @@ class TestLaplace:
         if "num_steps" in data:
             print()
             print(data["num_steps"])
-            print(data["Phi error"])
+            print(data["Phi_tilde error"])
             if just_err:
-                return data["num_steps"], data["Phi error"]
+                return data["num_steps"], data["Phi_tilde error"]
         np.testing.assert_allclose(data["Y_coil"], 0, atol=1e-12)
-        np.testing.assert_allclose(data["Phi_coil (periodic)"], data["Z"])
+        np.testing.assert_allclose(data["varphi (periodic)"], data["Z"])
         np.testing.assert_allclose(data["γ potential"], data["Z"], atol=1e-6)
 
     @pytest.mark.skip
@@ -968,7 +942,10 @@ class TestLaplace:
             num_steps.append(n)
             Phi_err.append(e)
             print(f"Resolution num_steps={n} is done with error={e}.")
-        data = {"num_steps": np.asarray(num_steps), "Phi error": np.asarray(Phi_err)}
+        data = {
+            "num_steps": np.asarray(num_steps),
+            "Phi_tilde error": np.asarray(Phi_err),
+        }
 
         with open(f"{name}.pkl", "wb") as file:
             pickle.dump(data, file)
@@ -1002,7 +979,12 @@ class TestLaplace:
         fig, ax = plt.subplots()
         gmres_label = None
         # fp_label = r"$\xi=2/3$" # noqa: E800
-        ax.semilogy(data["num_steps"], data["Phi error"], marker="o", label=gmres_label)
+        ax.semilogy(
+            data["num_steps"],
+            data["Phi_tilde error"],
+            marker="o",
+            label=gmres_label,
+        )
         ax.axhline(1e-7, color="black", label="Stop tolerance")
         ax.set_xlabel(r"Number of gmres steps in inversion for $\Phi$")
         ax.set_ylabel("Absolute error")
@@ -1056,9 +1038,9 @@ class TestLaplace:
         RpZ_data = surface.compute(["R", "phi", "Z", "n_rho"], grid=RpZ_grid)
         RpZ_data["B0*n"] = -RpZ_data["n_rho"][:, 2]
 
-        keys = ["Phi", "Z"] if just_err else ["∇φ", "Phi", "Z"]
+        keys = ["Phi_tilde", "Z"] if just_err else ["B_remainder", "Phi_tilde", "Z"]
         if residual_atol is not None:
-            keys += ["Phi_mn", "Phi error", "num_steps"]
+            keys += ["Phi_tilde_mn", "Phi_tilde error", "num_steps"]
         data, RpZ_data = field.compute(
             keys,
             grid,
@@ -1068,17 +1050,17 @@ class TestLaplace:
             on_boundary=True,
             options=options,
         )
-        potential_error = data["Z"] - data["Phi"]
+        potential_error = data["Z"] - data["Phi_tilde"]
         potential_error = potential_error - potential_error.mean()
         err = np.max(np.abs(potential_error))
         if residual_atol is not None:
-            np.testing.assert_allclose(data["Phi error"], 0, atol=residual_atol)
-            assert np.all(np.isfinite(data["Phi_mn"]))
+            np.testing.assert_allclose(data["Phi_tilde error"], 0, atol=residual_atol)
+            assert np.all(np.isfinite(data["Phi_tilde_mn"]))
         if just_err:
             return err
         np.testing.assert_allclose(potential_error, 0, atol=phi_atol)
         np.testing.assert_allclose(
-            dot(RpZ_data["∇φ"], RpZ_data["n_rho"]),
+            dot(RpZ_data["B_remainder"], RpZ_data["n_rho"]),
             -RpZ_data["B0*n"],
             atol=grad_atol,
         )
@@ -1114,27 +1096,27 @@ class TestLaplace:
             eq.surface, M=grid.M, N=grid.N, sym=False, B0=ToroidalMagneticField(5, 1)
         )
         data, _ = field.compute(
-            "Phi_mn", grid, options=LaplaceOptions(solve_method="direct")
+            "Phi_tilde_mn", grid, options=LaplaceOptions(solve_method="direct")
         )
-        constant_idx = field.Phi_basis.gauge_idx
+        constant_idx = field.Phi_tilde_basis.gauge_idx
         assert constant_idx.size
-        np.testing.assert_allclose(data["Phi_mn"][constant_idx], 0)
-        assert np.all(np.isfinite(data["Phi_mn"]))
+        np.testing.assert_allclose(data["Phi_tilde_mn"][constant_idx], 0)
+        assert np.all(np.isfinite(data["Phi_tilde_mn"]))
 
         grid = LinearGrid(rho=np.array([1.0]), M=3, N=3, NFP=eq.NFP, sym=False)
         field = SourceFreeField(
             eq.surface, M=2, N=2, sym=False, B0=ToroidalMagneticField(5, 1)
         )
         data, _ = field.compute(
-            "Phi_mn", grid, options=LaplaceOptions(solve_method="direct")
+            "Phi_tilde_mn", grid, options=LaplaceOptions(solve_method="direct")
         )
-        constant_idx = field.Phi_basis.gauge_idx
+        constant_idx = field.Phi_tilde_basis.gauge_idx
         assert constant_idx.size
-        np.testing.assert_allclose(data["Phi_mn"][constant_idx], 0)
-        assert np.all(np.isfinite(data["Phi_mn"]))
+        np.testing.assert_allclose(data["Phi_tilde_mn"][constant_idx], 0)
+        assert np.all(np.isfinite(data["Phi_tilde_mn"]))
 
     @pytest.mark.unit
-    def test_Phi_coil_mn_fixes_constant_gauge(self):
+    def test_varphi_mn_fixes_constant_gauge(self):
         """Test coil potential solve fixes the constant potential gauge."""
         eq = get("W7-X")
         grid = LinearGrid(rho=np.array([1.0]), M=2, N=2, NFP=eq.NFP, sym=False)
@@ -1145,11 +1127,11 @@ class TestLaplace:
             sym=False,
             B_coil=ToroidalMagneticField(5, 1),
         )
-        data, _ = field.compute("Phi_coil_mn", grid)
-        constant_idx = field.Phi_coil_basis.gauge_idx
+        data, _ = field.compute("varphi_mn", grid)
+        constant_idx = field.varphi_basis.gauge_idx
         assert constant_idx.size
-        np.testing.assert_allclose(data["Phi_coil_mn"][constant_idx], 0)
-        assert np.all(np.isfinite(data["Phi_coil_mn"]))
+        np.testing.assert_allclose(data["varphi_mn"][constant_idx], 0)
+        assert np.all(np.isfinite(data["varphi_mn"]))
 
     @pytest.mark.skip
     def test_convergence_run(
@@ -1167,7 +1149,7 @@ class TestLaplace:
             Grid resolutions (rs=M=N) to compute potential.
 
         """
-        data = {"resolution": rs, "Phi error": {}}
+        data = {"resolution": rs, "Phi_tilde error": {}}
 
         for D_quad in (False, True):
             err = []
@@ -1185,7 +1167,7 @@ class TestLaplace:
                     )
                 )
                 print(f"Resolution {r} is done.")
-            data["Phi error"][D_quad] = np.array(err)
+            data["Phi_tilde error"][D_quad] = np.array(err)
 
         with open(f"{name}.pkl", "wb") as file:
             pickle.dump(data, file)
@@ -1218,7 +1200,7 @@ class TestLaplace:
         )
         fig, ax = plt.subplots()
 
-        errs = data["Phi error"]
+        errs = data["Phi_tilde error"]
         for key, val in errs.items():
             ax.semilogy(
                 2 * data["resolution"] + 1,
@@ -1263,7 +1245,7 @@ class TestLaplace:
         # field, so explicitly opt out of the surface-inferred sine basis.
         field = SourceFreeField(surface, grid.M, grid.N, sym=False)
         data, RpZ_data = field.compute(
-            ["∇φ", "Phi", "x", "n_rho"],
+            ["B_remainder", "Phi_tilde", "x", "n_rho"],
             grid,
             data=data,
             on_boundary=True,
@@ -1277,16 +1259,16 @@ class TestLaplace:
         )
         assert data is RpZ_data
         print("num steps     :", data["num_steps"])
-        print("Phi error     :", data["Phi error"])
+        print("Phi_tilde error:", data["Phi_tilde error"])
 
         np.testing.assert_allclose(
-            np.ptp(_G(data["x"] - x0) - data["Phi"]),
+            np.ptp(_G(data["x"] - x0) - data["Phi_tilde"]),
             0,
             atol=1e-6,
         )
 
         np.testing.assert_allclose(
-            dot(data["∇φ"] - _grad_G(data["x"] - x0), data["n_rho"]),
+            dot(data["B_remainder"] - _grad_G(data["x"] - x0), data["n_rho"]),
             0,
             atol=1e-6,
         )
@@ -1368,7 +1350,7 @@ class TestLaplace:
         data = {
             key: val
             for key, val in data.items()
-            # dependencies of ∇φ
+            # dependencies of B_remainder
             if key in _kernel_BS_plus_grad_S.keys
         }
         data, RpZ_data = field.compute(

@@ -961,10 +961,8 @@ class FreeSurfaceError(_Objective):
         Options for the Laplace solver. Defaults to ``LaplaceOptions()``, which
         defaults to the GMRES iterative solver. Other options are BiCGStab and direct.
         Fastest is typically BiCGStab (heed the note in the max_steps option).
-        Forward-mode differentiation (``deriv_mode="fwd"``) is recommended for
-        GMRES and BiCGStab. If the installed JAX/Lineax versions cannot transpose
-        a function-defined operator in reverse mode, ``"fixed_point"`` can be
-        selected instead when ``optimistix`` is installed.
+        If an iterative solver errors due to incompatibility with old JAX versions,
+        ``"fixed_point"`` can be selected instead if ``optimistix`` is installed.
     use_dft : bool
         Whether to use the DFT interpolator for singular integrals instead of the
         FFT interpolator. Default is ``False``.
@@ -1030,44 +1028,59 @@ class FreeSurfaceError(_Objective):
                 sym=False,
             )
         assert grid.can_fft2
-        errorif(field.M_Phi > grid.M, msg=f"M_Phi = {field.M_Phi} > {grid.M} = grid.M.")
-        errorif(field.N_Phi > grid.N, msg=f"N_Phi = {field.N_Phi} > {grid.N} = grid.N.")
-
-        self._is_neumann = not hasattr(field, "M_Phi_coil")
         errorif(
-            not self._is_neumann and field.M_Phi_coil > grid.M,
-            msg=f"M_Phi_coil = {getattr(field, 'M_Phi_coil', 0)} > {grid.M} = grid.M.",
+            field.M_Phi_tilde > grid.M,
+            msg=f"M_Phi_tilde = {field.M_Phi_tilde} > {grid.M} = grid.M.",
         )
         errorif(
-            not self._is_neumann and field.N_Phi_coil > grid.N,
-            msg=f"N_Phi_coil = {getattr(field, 'N_Phi_coil', 0)} > {grid.N} = grid.N.",
+            field.N_Phi_tilde > grid.N,
+            msg=f"N_Phi_tilde = {field.N_Phi_tilde} > {grid.N} = grid.N.",
+        )
+
+        self._is_neumann = not hasattr(field, "M_varphi")
+        errorif(
+            not self._is_neumann and field.M_varphi > grid.M,
+            msg=f"M_varphi = {getattr(field, 'M_varphi', 0)} > {grid.M} = grid.M.",
+        )
+        errorif(
+            not self._is_neumann and field.N_varphi > grid.N,
+            msg=f"N_varphi = {getattr(field, 'N_varphi', 0)} > {grid.N} = grid.N.",
         )
         eval_grid = (
             grid
-            if (grid.M == field.M_Phi and grid.N == field.N_Phi)
-            else LinearGrid(M=field.M_Phi, N=field.N_Phi, NFP=grid.NFP, sym=False)
+            if (grid.M == field.M_Phi_tilde and grid.N == field.N_Phi_tilde)
+            else LinearGrid(
+                M=field.M_Phi_tilde,
+                N=field.N_Phi_tilde,
+                NFP=grid.NFP,
+                sym=False,
+            )
         )
         assert eval_grid.can_fft2
 
         errorif(
-            field.M_Phi != eval_grid.M,
-            msg=f"M_Phi = {field.M_Phi} != {eval_grid.M} = eval_grid.M.",
-        )
-        errorif(
-            field.N_Phi != eval_grid.N,
-            msg=f"N_Phi = {field.N_Phi} != {eval_grid.N} = eval_grid.N.",
-        )
-        errorif(
-            not self._is_neumann and field.M_Phi_coil > eval_grid.M,
+            field.M_Phi_tilde != eval_grid.M,
             msg=(
-                f"M_Phi_coil = {getattr(field, 'M_Phi_coil', 0)} > "
+                f"M_Phi_tilde = {field.M_Phi_tilde} != " f"{eval_grid.M} = eval_grid.M."
+            ),
+        )
+        errorif(
+            field.N_Phi_tilde != eval_grid.N,
+            msg=(
+                f"N_Phi_tilde = {field.N_Phi_tilde} != " f"{eval_grid.N} = eval_grid.N."
+            ),
+        )
+        errorif(
+            not self._is_neumann and field.M_varphi > eval_grid.M,
+            msg=(
+                f"M_varphi = {getattr(field, 'M_varphi', 0)} > "
                 f"{eval_grid.M} = eval_grid.M."
             ),
         )
         errorif(
-            not self._is_neumann and field.N_Phi_coil > eval_grid.N,
+            not self._is_neumann and field.N_varphi > eval_grid.N,
             msg=(
-                f"N_Phi_coil = {getattr(field, 'N_Phi_coil', 0)} > "
+                f"N_varphi = {getattr(field, 'N_varphi', 0)} > "
                 f"{eval_grid.N} = eval_grid.N."
             ),
         )
@@ -1149,14 +1162,15 @@ class FreeSurfaceError(_Objective):
         options = LaplaceOptions(*self._options)
 
         eq_transforms = get_transforms(self._inner_keys, eq, grid=self._eval_grid)
-        eval_transforms = get_transforms(
-            "K_vc (periodic)", self._field, grid=self._eval_grid
-        )
+        eval_keys = ["K_vc"] + ([] if self._is_neumann else ["varphi (periodic)"])
+        eval_transforms = get_transforms(eval_keys, self._field, grid=self._eval_grid)
         if self._use_same_grid:
             source_transforms = eval_transforms
             grad_transforms = eq_transforms
         else:
-            source_transforms = get_transforms("Phi_mn", self._field, grid=self._grid)
+            source_transforms = get_transforms(
+                "Phi_tilde_mn", self._field, grid=self._grid
+            )
             grad_transforms = get_transforms(
                 self._grad_keys + ["phi", "omega", "Z"], eq, grid=self._grid
             )
@@ -1313,7 +1327,7 @@ class FreeSurfaceError(_Objective):
             data["B0*n"] += dot(data["B_coil"], data["n_rho"])
         elif not self._use_same_grid:
             potential_field_data, _ = self._field.compute(
-                "Phi_coil (periodic)",
+                "varphi (periodic)",
                 grid=self._eval_grid,
                 params=field_params,
                 transforms=eval_transforms,
@@ -1322,11 +1336,11 @@ class FreeSurfaceError(_Objective):
                 B_coil=self._B_coil,
                 field_grid=self._coil_grid,
             )
-            data["Phi_coil (periodic)"] = potential_field_data["Phi_coil (periodic)"]
+            data["varphi (periodic)"] = potential_field_data["varphi (periodic)"]
 
         data = compute_fun(
             self._field,
-            "Phi (periodic)",
+            "Phi_tilde",
             field_params,
             eval_transforms,
             profiles,
@@ -1337,7 +1351,7 @@ class FreeSurfaceError(_Objective):
         )
         # We differentiate through the solution, not the initial guess,
         # so we stop the gradient for numerical stability.
-        return stop_gradient(data["Phi (periodic)"])
+        return stop_gradient(data["Phi_tilde"])
 
     def compute(self, params, I_sheet_params=None, constants=None):
         """Compute boundary error.
@@ -1364,7 +1378,7 @@ class FreeSurfaceError(_Objective):
         eq = self.things[0]
         I_sheet = 0.0 if I_sheet_params is None else I_sheet_params["I_sheet"][0]
         options = LaplaceOptions(*self._options)._replace(
-            Phi_0=constants["initial_guess"]
+            Phi_tilde_0=constants["initial_guess"]
         )
 
         inner = compute_fun(
@@ -1402,7 +1416,7 @@ class FreeSurfaceError(_Objective):
         elif not self._use_same_grid:
             outer = compute_fun(
                 self._field,
-                "Phi_coil (periodic)",
+                "varphi (periodic)",
                 field_params,
                 constants["eval_transforms"],
                 constants["profiles"],
@@ -1436,7 +1450,7 @@ class FreeSurfaceError(_Objective):
             if potential_data is not None:
                 data["potential data"] = potential_data
             if not self._is_neumann:
-                data["Phi_coil (periodic)"] = outer["Phi_coil (periodic)"]
+                data["varphi (periodic)"] = outer["varphi (periodic)"]
             B_I_unit_source = self._toroidal_current_unit_field(
                 params, grads, constants
             )
@@ -1456,9 +1470,9 @@ class FreeSurfaceError(_Objective):
                 )
                 data["B0*n"] += dot(data["B_coil"], data["n_rho"])
 
-            outer["Phi_mn"] = compute_fun(
+            outer["Phi_tilde_mn"] = compute_fun(
                 self._field,
-                "Phi_mn",
+                "Phi_tilde_mn",
                 field_params,
                 constants["eval_transforms"],
                 constants["profiles"],
@@ -1466,11 +1480,11 @@ class FreeSurfaceError(_Objective):
                 options=options,
                 B_coil=self._B_coil,
                 field_grid=self._coil_grid,
-            )["Phi_mn"]
+            )["Phi_tilde_mn"]
 
         outer = compute_fun(
             self._field,
-            "K_vc (periodic)",
+            "K_vc",
             field_params,
             constants["eval_transforms"],
             constants["profiles"],
@@ -1481,15 +1495,15 @@ class FreeSurfaceError(_Objective):
         )
         # Reconstruct the physical tangential trace from the same harmonic
         # representatives whose normal traces entered the layer solve.
-        outer["K_vc"] = outer["K_vc (periodic)"] + cross(
+        outer["B x n"] = outer["K_vc"] + cross(
             B_I_eval + field_params["Y"] * inner["grad(phi)"],
             inner["n_rho"],
         )
         if self._is_neumann:
-            outer["K_vc"] += cross(outer["B_coil"], inner["n_rho"])
-        outer["|K_vc|^2"] = dot(outer["K_vc"], outer["K_vc"])
+            outer["B x n"] += cross(outer["B_coil"], inner["n_rho"])
+        outer["|B x n|^2"] = dot(outer["B x n"], outer["B x n"])
 
-        return (outer["|K_vc|^2"] - inner["|B|^2"] - 2 * mu_0 * inner["p"]) * inner[
+        return (outer["|B x n|^2"] - inner["|B|^2"] - 2 * mu_0 * inner["p"]) * inner[
             "|e_theta x e_zeta|"
         ]
 

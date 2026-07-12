@@ -40,7 +40,7 @@ from .data_index import register_compute_fun
 class Options(NamedTuple):
     """Laplace solver options."""
 
-    Phi_0: Optional[jax.Array] = None
+    Phi_tilde_0: Optional[jax.Array] = None
     """Initial guess for iteration."""
 
     atol: float = 1e-6
@@ -73,16 +73,14 @@ class Options(NamedTuple):
 
     One of ``"gmres"``, ``"bicgstab"``, or ``"direct"``. Default is GMRES.
     Fastest is typically BiCGStab (heed the note in the max_steps option).
-    Forward-mode differentiation is recommended for the function-operator
-    solvers. If the installed JAX/Lineax versions cannot transpose such an
-    operator in reverse mode, ``"fixed_point"`` can be selected instead when
-    ``optimistix`` is installed.
+    If an iterative solver errors due to incompatibility with old JAX versions,
+    ``"fixed_point"`` can be selected instead if ``optimistix`` is installed.
     """
 
     full_output: bool = False
     """Whether to return diagnostic output of the iterative potential solve.
 
-    If ``True``, computes the maximum error ``Phi error`` and stores the number
+    If ``True``, computes the maximum error ``Phi_tilde error`` and stores the number
     of steps ``num_steps`` used by the scalar potential solver. Default is
     ``False``.
     """
@@ -160,7 +158,7 @@ def _D_plus_half(
         known_map = None
     else:
         ndim = basis.num_modes
-        known_map = ("Phi (periodic)", basis.evaluate)
+        known_map = ("Phi_tilde", basis.evaluate)
 
     kernel = _kernel_dipole if _D_quad else _kernel_dipole_plus_half
 
@@ -178,7 +176,7 @@ def _D_plus_half(
         result = result.squeeze(-1)
 
     if _D_quad:
-        result += eval_data["Phi(x) (periodic)"] / 2
+        result += eval_data["Phi_tilde(x)"] / 2
 
     return result
 
@@ -203,10 +201,10 @@ def _direct_solve(
         source_grid,
         _kernel_dipole_plus_half,
     )
-    Phi = basis.evaluate(potential_grid)
-    potential_data["Phi(x) (periodic)"] = Phi
-    source_data["Phi (periodic)"] = (
-        Phi
+    Phi_tilde = basis.evaluate(potential_grid)
+    potential_data["Phi_tilde(x)"] = Phi_tilde
+    source_data["Phi_tilde"] = (
+        Phi_tilde
         if (
             potential_grid.num_theta == source_grid.num_theta
             and potential_grid.num_zeta == source_grid.num_zeta
@@ -229,7 +227,7 @@ def _direct_solve(
         # This system is negative definite, but perhaps not symmetric.
         # Lineax assumes negative semidefinite means the operator is symmetric.
         # Hence we do not set that tag.
-        D -= Phi
+        D -= Phi_tilde
     elif options.problem == "interior Neumann" and basis.gauge_idx.size:
         # This system is positive definite, but the same logic above applies.
         D = jnp.delete(D, basis.gauge_idx, axis=1, assume_unique_indices=True)
@@ -238,13 +236,13 @@ def _direct_solve(
             boundary_condition = boundary_condition[:-1]
 
     D = lx.MatrixLinearOperator(D)
-    Phi_mn = lx.linear_solve(
+    Phi_tilde_mn = lx.linear_solve(
         D, boundary_condition, solver=lx.AutoLinearSolver(well_posed=well_posed)
     ).value
     if options.problem == "interior Neumann" and basis.gauge_idx.size:
-        Phi_mn = jnp.insert(Phi_mn, basis.gauge_idx, 0.0)
+        Phi_tilde_mn = jnp.insert(Phi_tilde_mn, basis.gauge_idx, 0.0)
 
-    return Phi_mn
+    return Phi_tilde_mn
 
 
 @eqx.filter_jit
@@ -261,10 +259,10 @@ def _iterative_solve(
         source_grid,
         _kernel_dipole_plus_half,
     )
-    Phi_0 = options.Phi_0
-    if Phi_0 is None:
-        Phi_0 = jnp.zeros(potential_grid.num_nodes)
-    assert Phi_0.size == potential_grid.num_nodes
+    Phi_tilde_0 = options.Phi_tilde_0
+    if Phi_tilde_0 is None:
+        Phi_tilde_0 = jnp.zeros(potential_grid.num_nodes)
+    assert Phi_tilde_0.size == potential_grid.num_nodes
 
     subtract_phi = options.problem in ("exterior Neumann", "interior Dirichlet")
     solvers = {"gmres": lx.GMRES, "bicgstab": lx.BiCGStab}
@@ -278,7 +276,7 @@ def _iterative_solve(
                 chunk_size=options.chunk_size,
                 subtract_phi=subtract_phi,
             ),
-            jax.ShapeDtypeStruct(Phi_0.shape, Phi_0.dtype),
+            jax.ShapeDtypeStruct(Phi_tilde_0.shape, Phi_tilde_0.dtype),
         )
         solution = lx.linear_solve(
             operator,
@@ -288,7 +286,7 @@ def _iterative_solve(
                 rtol=options.rtol,
                 max_steps=options.max_steps,
             ),
-            options={"y0": Phi_0},
+            options={"y0": Phi_tilde_0},
             throw=options.throw,
         )
         if options.full_output:
@@ -310,7 +308,7 @@ def _iterative_solve(
     solution = optx.fixed_point(
         _iteration_operator,
         optx.FixedPointIteration(rtol=options.rtol, atol=options.atol),
-        Phi_0,
+        Phi_tilde_0,
         args,
         max_steps=options.max_steps,
         adjoint=optx.ImplicitAdjoint(
@@ -338,7 +336,7 @@ def _iterative_solve(
     return solution.value
 
 
-def _iteration_operator(Phi, args):
+def _iteration_operator(Phi_tilde, args):
     """Fixed-point iteration for the selected boundary integral equation."""
     (
         rhs,
@@ -349,9 +347,9 @@ def _iteration_operator(Phi, args):
         xi,
         subtract_phi,
     ) = args
-    potential_data["Phi(x) (periodic)"] = Phi
-    source_data["Phi (periodic)"] = _interp(
-        Phi, interpolator.eval_grid, interpolator.source_grid
+    potential_data["Phi_tilde(x)"] = Phi_tilde
+    source_data["Phi_tilde"] = _interp(
+        Phi_tilde, interpolator.eval_grid, interpolator.source_grid
     )
     out = _D_plus_half(
         potential_data,
@@ -361,19 +359,19 @@ def _iteration_operator(Phi, args):
         prune_data=False,
     )
     if subtract_phi:
-        out = ((xi - 1) * Phi + out - rhs) / xi
+        out = ((xi - 1) * Phi_tilde + out - rhs) / xi
     else:
-        out = (xi * Phi - out + rhs) / xi
+        out = (xi * Phi_tilde - out + rhs) / xi
     return out
 
 
 def _linear_potential_operator(
-    Phi, potential_data, source_data, interpolator, chunk_size, subtract_phi
+    Phi_tilde, potential_data, source_data, interpolator, chunk_size, subtract_phi
 ):
     """Equation solved by the iterative linear solver."""
-    potential_data["Phi(x) (periodic)"] = Phi
-    source_data["Phi (periodic)"] = _interp(
-        Phi, interpolator.eval_grid, interpolator.source_grid
+    potential_data["Phi_tilde(x)"] = Phi_tilde
+    source_data["Phi_tilde"] = _interp(
+        Phi_tilde, interpolator.eval_grid, interpolator.source_grid
     )
     out = _D_plus_half(
         potential_data,
@@ -383,7 +381,7 @@ def _linear_potential_operator(
         prune_data=False,
     )
     if subtract_phi:
-        out -= Phi
+        out -= Phi_tilde
     return out
 
 
@@ -531,17 +529,17 @@ def _S_B0_n(params, transforms, profiles, data, **kwargs):
 
 
 @register_compute_fun(
-    name="Phi_mn",
-    label="\\Phi_{m n}",
+    name="Phi_tilde_mn",
+    label="\\widetilde{\\Phi}_{m n}",
     units="T m",
     units_long="Tesla meter",
-    description="Fourier coefficients of the single-valued potential remainder",
+    description="Fourier coefficients of the globally defined harmonic remainder",
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"Phi": [[0, 0, 0]]},
+    transforms={"Phi_tilde": [[0, 0, 0]]},
     profiles=[],
-    data=list(set(_kernel_dipole_plus_half.keys) - {"Phi (periodic)"})
+    data=list(set(_kernel_dipole_plus_half.keys) - {"Phi_tilde"})
     + ["S[B0*n]", "interpolator"],
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
@@ -554,16 +552,16 @@ def _scalar_potential_mn_Neumann(params, transforms, profiles, data, **kwargs):
     _check_solve_method(options.solve_method)
 
     if options.solve_method == "direct":
-        data["Phi_mn"] = _direct_solve(
+        data["Phi_tilde_mn"] = _direct_solve(
             data["S[B0*n]"],
             data.get("potential data", data),
             data,
             data["interpolator"],
-            transforms["Phi"].basis,
+            transforms["Phi_tilde"].basis,
             options,
         )
     else:
-        data["Phi (periodic)"] = _iterative_solve(
+        data["Phi_tilde"] = _iterative_solve(
             data["S[B0*n]"],
             data.get("potential data", data),
             data,
@@ -571,18 +569,18 @@ def _scalar_potential_mn_Neumann(params, transforms, profiles, data, **kwargs):
             options,
         )
         if options.full_output:
-            data["Phi (periodic)"], (data["Phi error"], data["num_steps"]) = data[
-                "Phi (periodic)"
+            data["Phi_tilde"], (data["Phi_tilde error"], data["num_steps"]) = data[
+                "Phi_tilde"
             ]
 
-        assert data["Phi (periodic)"].size == transforms["Phi"].grid.num_nodes
-        data["Phi_mn"] = transforms["Phi"].fit(data["Phi (periodic)"])
+        assert data["Phi_tilde"].size == transforms["Phi_tilde"].grid.num_nodes
+        data["Phi_tilde_mn"] = transforms["Phi_tilde"].fit(data["Phi_tilde"])
     return data
 
 
 @register_compute_fun(
-    name="Phi (periodic)",
-    label="\\Phi_{\\text{rem}}",
+    name="Phi_tilde",
+    label="\\widetilde{\\Phi}",
     units="T m",
     units_long="Tesla meter",
     description=(
@@ -591,60 +589,60 @@ def _scalar_potential_mn_Neumann(params, transforms, profiles, data, **kwargs):
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"Phi": [[0, 0, 0]]},
+    transforms={"Phi_tilde": [[0, 0, 0]]},
     profiles=[],
-    data=["Phi_mn"],
+    data=["Phi_tilde_mn"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
-def _Phi_periodic_potential(params, transforms, profiles, data, **kwargs):
-    assert data["Phi_mn"].size == transforms["Phi"].basis.num_modes
-    data["Phi (periodic)"] = transforms["Phi"].transform(data["Phi_mn"])
+def _Phi_tilde(params, transforms, profiles, data, **kwargs):
+    assert data["Phi_tilde_mn"].size == transforms["Phi_tilde"].basis.num_modes
+    data["Phi_tilde"] = transforms["Phi_tilde"].transform(data["Phi_tilde_mn"])
     return data
 
 
 @register_compute_fun(
-    name="Phi_t (periodic)",
-    label="\\partial_{\\theta} \\Phi_{\\text{rem}}",
+    name="Phi_tilde_t",
+    label="\\partial_{\\theta} \\widetilde{\\Phi}",
     units="T m",
     units_long="Tesla meter",
     description="Poloidal derivative of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"Phi": [[0, 1, 0]]},
+    transforms={"Phi_tilde": [[0, 1, 0]]},
     profiles=[],
-    data=["Phi_mn"],
+    data=["Phi_tilde_mn"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
-def _pot_Phi_t_periodic(params, transforms, profiles, data, **kwargs):
-    assert data["Phi_mn"].size == transforms["Phi"].basis.num_modes
-    data["Phi_t (periodic)"] = transforms["Phi"].transform(data["Phi_mn"], dt=1)
+def _Phi_tilde_t(params, transforms, profiles, data, **kwargs):
+    assert data["Phi_tilde_mn"].size == transforms["Phi_tilde"].basis.num_modes
+    data["Phi_tilde_t"] = transforms["Phi_tilde"].transform(data["Phi_tilde_mn"], dt=1)
     return data
 
 
 @register_compute_fun(
-    name="Phi_z (periodic)",
-    label="\\partial_{\\zeta} \\Phi_{\\text{rem}}",
+    name="Phi_tilde_z",
+    label="\\partial_{\\zeta} \\widetilde{\\Phi}",
     units="T m",
     units_long="Tesla meter",
     description="Toroidal derivative of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"Phi": [[0, 0, 1]]},
+    transforms={"Phi_tilde": [[0, 0, 1]]},
     profiles=[],
-    data=["Phi_mn"],
+    data=["Phi_tilde_mn"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
-def _pot_Phi_z_periodic(params, transforms, profiles, data, **kwargs):
-    assert data["Phi_mn"].size == transforms["Phi"].basis.num_modes
-    data["Phi_z (periodic)"] = transforms["Phi"].transform(data["Phi_mn"], dz=1)
+def _Phi_tilde_z(params, transforms, profiles, data, **kwargs):
+    assert data["Phi_tilde_mn"].size == transforms["Phi_tilde"].basis.num_modes
+    data["Phi_tilde_z"] = transforms["Phi_tilde"].transform(data["Phi_tilde_mn"], dz=1)
     return data
 
 
 @register_compute_fun(
-    name="K_vc (periodic)",
-    label="\\nabla \\Phi_{\\text{rem}} \\times n",
+    name="K_vc",
+    label="\\nabla \\widetilde{\\Phi} \\times n",
     units="T",
     units_long="Tesla",
     description=(
@@ -658,46 +656,22 @@ def _pot_Phi_z_periodic(params, transforms, profiles, data, **kwargs):
     data=[
         "n_rho x grad(theta)",
         "n_rho x grad(zeta)",
-        "Phi_t (periodic)",
-        "Phi_z (periodic)",
+        "Phi_tilde_t",
+        "Phi_tilde_z",
     ],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
-def _virtual_surface_current_periodic(params, transforms, profiles, data, **kwargs):
-    data["K_vc (periodic)"] = -(
-        data["Phi_t (periodic)"][:, None] * data["n_rho x grad(theta)"]
-        + data["Phi_z (periodic)"][:, None] * data["n_rho x grad(zeta)"]
+def _virtual_surface_current(params, transforms, profiles, data, **kwargs):
+    data["K_vc"] = -(
+        data["Phi_tilde_t"][:, None] * data["n_rho x grad(theta)"]
+        + data["Phi_tilde_z"][:, None] * data["n_rho x grad(zeta)"]
     )
     return data
 
 
 @register_compute_fun(
-    name="Phi",
-    label="\\Phi_{\\text{rem}}",
-    units="T m",
-    units_long="Tesla meter",
-    description=(
-        "Single-valued potential remainder solved by the boundary integral equation"
-    ),
-    dim=1,
-    coordinates="tz",
-    params=[],
-    transforms={},
-    profiles=[],
-    data=["Phi (periodic)"],
-    parameterization="desc.magnetic_fields._laplace.SourceFreeField",
-)
-def _Phi_scalar_potential(params, transforms, profiles, data, **kwargs):
-    # The BIE solves only the globally defined remainder. The physical period
-    # field is supplied as B0; ambient coordinate functions generally do not
-    # reproduce its tangential trace.
-    data["Phi"] = data["Phi (periodic)"]
-    return data
-
-
-@register_compute_fun(
-    name="Phi error",
-    label="\\Phi_{\\text{error}}",
+    name="Phi_tilde error",
+    label="\\widetilde{\\Phi}_{\\text{error}}",
     units="T m",
     units_long="Tesla meter",
     description="Magnetic scalar potential error",
@@ -706,11 +680,11 @@ def _Phi_scalar_potential(params, transforms, profiles, data, **kwargs):
     params=[],
     transforms={},
     profiles=[],
-    data=["Phi_mn"],
+    data=["Phi_tilde_mn"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
     public=False,
 )
-def _Phi_error(params, transforms, profiles, data, **kwargs):
+def _Phi_tilde_error(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
     return data
 
@@ -726,50 +700,12 @@ def _Phi_error(params, transforms, profiles, data, **kwargs):
     params=[],
     transforms={},
     profiles=[],
-    data=["Phi_mn"],
+    data=["Phi_tilde_mn"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
     public=False,
 )
-def _Phi_num_steps(params, transforms, profiles, data, **kwargs):
+def _Phi_tilde_num_steps(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
-    return data
-
-
-@register_compute_fun(
-    name="Phi_t",
-    label="\\partial_{\\theta} \\Phi_{\\text{rem}}",
-    units="T m",
-    units_long="Tesla meter",
-    description="Poloidal derivative of the single-valued potential remainder",
-    dim=1,
-    coordinates="tz",
-    params=[],
-    transforms={},
-    profiles=[],
-    data=["Phi_t (periodic)"],
-    parameterization="desc.magnetic_fields._laplace.SourceFreeField",
-)
-def _pot_Phi_t(params, transforms, profiles, data, **kwargs):
-    data["Phi_t"] = data["Phi_t (periodic)"]
-    return data
-
-
-@register_compute_fun(
-    name="Phi_z",
-    label="\\partial_{\\zeta} \\Phi_{\\text{rem}}",
-    units="T m",
-    units_long="Tesla meter",
-    description="Toroidal derivative of the single-valued potential remainder",
-    dim=1,
-    coordinates="tz",
-    params=[],
-    transforms={},
-    profiles=[],
-    data=["Phi_z (periodic)"],
-    parameterization="desc.magnetic_fields._laplace.SourceFreeField",
-)
-def _pot_Phi_z(params, transforms, profiles, data, **kwargs):
-    data["Phi_z"] = data["Phi_z (periodic)"]
     return data
 
 
@@ -794,45 +730,45 @@ def _B0_cross_n(params, transforms, profiles, data, **kwargs):
 
 
 @register_compute_fun(
-    name="K_vc",
-    label="(\\nabla \\Phi_{\\text{rem}} + B_0) \\times n",
+    name="B x n",
+    label="(\\nabla \\varphi + B_0) \\times n",
     units="T",
     units_long="Tesla",
-    description="Virtual surface current from the physical boundary field",
+    description="Tangential trace of the physical boundary field",
     dim=3,
     coordinates="tz",
     params=[],
     transforms={},
     profiles=[],
-    data=["K_vc (periodic)", "B0 x n"],
+    data=["K_vc", "B0 x n"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
-def _virtual_surface_current(params, transforms, profiles, data, **kwargs):
-    data["K_vc"] = data["K_vc (periodic)"] + data["B0 x n"]
+def _B_cross_n(params, transforms, profiles, data, **kwargs):
+    data["B x n"] = data["K_vc"] + data["B0 x n"]
     return data
 
 
 @register_compute_fun(
-    name="|K_vc|^2",
-    label="\\lvert K_{\\text{vc}} \\rvert^2",
+    name="|B x n|^2",
+    label="\\lvert B \\times n \\rvert^2",
     units="T^2",
     units_long="Tesla squared",
-    description="Squared norm of virtual surface current",
+    description="Squared norm of the physical tangential boundary field",
     dim=1,
     coordinates="tz",
     params=[],
     transforms={},
     profiles=[],
-    data=["K_vc"],
+    data=["B x n"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
-def _K_vc_squared(params, transforms, profiles, data, **kwargs):
-    data["|K_vc|^2"] = dot(data["K_vc"], data["K_vc"])
+def _B_cross_n_squared(params, transforms, profiles, data, **kwargs):
+    data["|B x n|^2"] = dot(data["B x n"], data["B x n"])
     return data
 
 
 @register_compute_fun(
-    name="∇φ",
+    name="B_remainder",
     label="\\nabla \\varphi",
     units="T",
     units_long="Tesla",
@@ -855,13 +791,13 @@ def _K_vc_squared(params, transforms, profiles, data, **kwargs):
     on_boundary="bool : Whether RpZcoords are on boundary surface.",
     public=False,
 )
-def _grad_potential(params, transforms, profiles, data, RpZ_data, **kwargs):
+def _B_remainder(params, transforms, profiles, data, RpZ_data, **kwargs):
     # noqa: unused dependency
     options = kwargs.get("options", Options())
     sign = 1 - 2 * int("exterior" in options.problem)
 
     if kwargs["on_boundary"]:
-        RpZ_data["∇φ"] = (
+        RpZ_data["B_remainder"] = (
             sign
             * 2
             * singular_integral(
@@ -877,7 +813,7 @@ def _grad_potential(params, transforms, profiles, data, RpZ_data, **kwargs):
         eval_data, source_data = _prune_data(
             RpZ_data, None, data, grid, _kernel_BS_plus_grad_S
         )
-        RpZ_data["∇φ"] = sign * _nonsingular_part(
+        RpZ_data["B_remainder"] = sign * _nonsingular_part(
             eval_data,
             None,
             source_data,
@@ -901,11 +837,11 @@ def _grad_potential(params, transforms, profiles, data, RpZ_data, **kwargs):
     params=[],
     transforms={},
     profiles=[],
-    data=["∇φ", "B0"],
+    data=["B_remainder", "B0"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
 def _total_B(params, transforms, profiles, data, RpZ_data, **kwargs):
-    RpZ_data["B"] = RpZ_data["∇φ"] + RpZ_data["B0"]
+    RpZ_data["B"] = RpZ_data["B_remainder"] + RpZ_data["B0"]
     return RpZ_data
 
 
@@ -1033,20 +969,20 @@ def _Y_coil(params, transforms, profiles, data, **kwargs):
 
 
 @register_compute_fun(
-    name="Phi_coil_mn",
-    label="\\Phi_{\\text{coil}, mn}",
+    name="varphi_mn",
+    label="\\varphi_{m n}",
     units="T m",
     units_long="Tesla meter",
     description="Fourier coefficients of periodic part of coil scalar potential",
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"Phi_coil": [[0, 0, 0]]},
+    transforms={"varphi": [[0, 0, 0]]},
     profiles=[],
     data=["n_rho x B_coil", "n_rho x grad(theta)", "n_rho x grad(zeta)", "Y_coil"],
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
 )
-def _Phi_mn_coil(params, transforms, profiles, data, **kwargs):
+def _varphi_mn(params, transforms, profiles, data, **kwargs):
     """Returns coil potential harmonics.
 
     ``B_coil`` must be smooth and divergence free for correctness of inversion.
@@ -1055,7 +991,7 @@ def _Phi_mn_coil(params, transforms, profiles, data, **kwargs):
     grid = transforms["grid"]
     assert grid.num_rho == 1
 
-    basis = transforms["Phi_coil"].basis
+    basis = transforms["varphi"].basis
     # TODO: could compute these in objective build
     #       and avoid computing if they are passed in as kwargs
     _t = basis.evaluate(grid, [0, 1, 0])[:, None]
@@ -1070,20 +1006,20 @@ def _Phi_mn_coil(params, transforms, profiles, data, **kwargs):
     mat = lx.MatrixLinearOperator(mat)
 
     # Equation 5.16 in [1]_.
-    Phi_coil_mn = lx.linear_solve(
+    varphi_mn = lx.linear_solve(
         mat,
         (data["n_rho x B_coil"] - data["Y_coil"] * data["n_rho x grad(zeta)"]).ravel(),
         solver=lx.AutoLinearSolver(well_posed=None),
     ).value
     if basis.gauge_idx.size:
-        Phi_coil_mn = jnp.insert(Phi_coil_mn, basis.gauge_idx, 0.0)
+        varphi_mn = jnp.insert(varphi_mn, basis.gauge_idx, 0.0)
 
-    data["Phi_coil_mn"] = Phi_coil_mn
+    data["varphi_mn"] = varphi_mn
     return data
 
 
 @register_compute_fun(
-    name="Phi_coil (periodic)",
+    name="varphi (periodic)",
     label="(n \\times \\nabla)^{-1} (n \\times B_{\\text{coil}})",
     units="T m",
     units_long="Tesla meter",
@@ -1091,18 +1027,18 @@ def _Phi_mn_coil(params, transforms, profiles, data, **kwargs):
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"Phi_coil": [[0, 0, 0]]},
+    transforms={"varphi": [[0, 0, 0]]},
     profiles=[],
-    data=["Phi_coil_mn"],
+    data=["varphi_mn"],
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
 )
-def _Phi_coil_periodic(params, transforms, profiles, data, **kwargs):
-    data["Phi_coil (periodic)"] = transforms["Phi_coil"].transform(data["Phi_coil_mn"])
+def _varphi_periodic(params, transforms, profiles, data, **kwargs):
+    data["varphi (periodic)"] = transforms["varphi"].transform(data["varphi_mn"])
     return data
 
 
 @register_compute_fun(
-    name="Phi_coil (secular)",
+    name="varphi (secular)",
     label="(n \\times \\nabla)^{-1} (n \\times B_{\\text{coil}})",
     units="T m",
     units_long="Tesla meter",
@@ -1115,13 +1051,13 @@ def _Phi_coil_periodic(params, transforms, profiles, data, **kwargs):
     data=["zeta", "Y_coil"],
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
 )
-def _Phi_coil_secular(params, transforms, profiles, data, **kwargs):
-    data["Phi_coil (secular)"] = data["Y_coil"] * data["zeta"]
+def _varphi_secular(params, transforms, profiles, data, **kwargs):
+    data["varphi (secular)"] = data["Y_coil"] * data["zeta"]
     return data
 
 
 @register_compute_fun(
-    name="Phi_coil",
+    name="varphi",
     label="(n \\times \\nabla)^{-1} (n \\times B_{\\text{coil}})",
     units="T m",
     units_long="Tesla meter",
@@ -1131,56 +1067,56 @@ def _Phi_coil_secular(params, transforms, profiles, data, **kwargs):
     params=[],
     transforms={},
     profiles=[],
-    data=["Phi_coil (periodic)", "Phi_coil (secular)"],
+    data=["varphi (periodic)", "varphi (secular)"],
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
 )
-def _Phi_coil(params, transforms, profiles, data, **kwargs):
-    data["Phi_coil"] = data["Phi_coil (periodic)"] + data["Phi_coil (secular)"]
+def _varphi(params, transforms, profiles, data, **kwargs):
+    data["varphi"] = data["varphi (periodic)"] + data["varphi (secular)"]
     return data
 
 
 @register_compute_fun(
-    name="Phi_mn",
-    label="\\Phi_{m n}",
+    name="Phi_tilde_mn",
+    label="\\widetilde{\\Phi}_{m n}",
     units="T m",
     units_long="Tesla meter",
-    description="Fourier coefficients of the single-valued potential remainder",
+    description="Fourier coefficients of the globally defined dipole density",
     dim=1,
     coordinates="tz",
     params=["Y"],
-    transforms={"Phi": [[0, 0, 0]]},
+    transforms={"Phi_tilde": [[0, 0, 0]]},
     profiles=[],
-    data=list(set(_kernel_dipole_plus_half.keys) - {"Phi (periodic)"})
-    + ["Phi_coil (periodic)", "omega", "S[B0*n]", "interpolator"],
+    data=list(set(_kernel_dipole_plus_half.keys) - {"Phi_tilde"})
+    + ["varphi (periodic)", "omega", "S[B0*n]", "interpolator"],
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
     options=Options.__doc__,
 )
-def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwargs):
+def _dipole_density_mn_free_surface(params, transforms, profiles, data, **kwargs):
     """Solve for tilde-Phi, the remainder relative to physical period fields."""
     # noqa: unused dependency
     options = kwargs.get("options", Options())._replace(problem="interior Dirichlet")
     _check_solve_method(options.solve_method)
 
-    # Phi_coil (periodic) is the full periodic part of the coordinate split
+    # varphi (periodic) is the full periodic part of the coordinate split
     # after subtracting Y_coil * zeta. The Green representation instead uses
     # tilde-varphi relative to the physical harmonic field Y_coil * grad(phi),
     # whose boundary potential is Y_coil * (zeta + omega).
     potential_data = data.get("potential data", data)
-    varphi_tilde = data["Phi_coil (periodic)"] - params["Y"] * potential_data["omega"]
+    varphi_tilde = data["varphi (periodic)"] - params["Y"] * potential_data["omega"]
     boundary_condition = data["S[B0*n]"] - varphi_tilde
     if options.solve_method == "direct":
-        data["Phi_mn"] = _direct_solve(
+        data["Phi_tilde_mn"] = _direct_solve(
             boundary_condition,
             data.get("potential data", data),
             data,
             data["interpolator"],
-            transforms["Phi"].basis,
+            transforms["Phi_tilde"].basis,
             options,
         )
     else:
-        data["Phi (periodic)"] = _iterative_solve(
+        data["Phi_tilde"] = _iterative_solve(
             boundary_condition,
             data.get("potential data", data),
             data,
@@ -1188,12 +1124,12 @@ def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwar
             options,
         )
         if options.full_output:
-            data["Phi (periodic)"], (data["Phi error"], data["num_steps"]) = data[
-                "Phi (periodic)"
+            data["Phi_tilde"], (data["Phi_tilde error"], data["num_steps"]) = data[
+                "Phi_tilde"
             ]
 
-        assert data["Phi (periodic)"].size == transforms["Phi"].grid.num_nodes
-        data["Phi_mn"] = transforms["Phi"].fit(data["Phi (periodic)"])
+        assert data["Phi_tilde"].size == transforms["Phi_tilde"].grid.num_nodes
+        data["Phi_tilde_mn"] = transforms["Phi_tilde"].fit(data["Phi_tilde"])
     return data
 
 
@@ -1218,10 +1154,10 @@ def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwar
 def _gamma_potential(params, transforms, profiles, data, **kwargs):
     # noqa: unused dependency
     options = kwargs.get("options", Options())
-    data["Phi(x) (periodic)"] = data["Phi (periodic)"]
+    data["Phi_tilde(x)"] = data["Phi_tilde"]
     # Left hand side of equation 5.15 in [1]_ computed by evaluating
     # the right hand side. This is used for testing.
-    data["γ potential"] = data["Phi (periodic)"] - _D_plus_half(
+    data["γ potential"] = data["Phi_tilde"] - _D_plus_half(
         data,
         data,
         data["interpolator"],
