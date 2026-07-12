@@ -17,6 +17,7 @@ from tests.test_plotting import tol_1d
 
 from desc.backend import jnp, vmap
 from desc.basis import FourierZernikeBasis
+from desc.compute import _laplace as laplace_compute
 from desc.compute._drift import _binormal_drift
 from desc.equilibrium import Equilibrium
 from desc.equilibrium.coords import get_rtz_grid
@@ -745,6 +746,126 @@ class TestLaplace:
             return B
 
     @pytest.mark.unit
+    def test_iterative_defaults_and_source_free_symmetry(self):
+        """Iterative solves fail loudly and infer physical field symmetry."""
+        options = LaplaceOptions()
+        assert options.solve_method == "gmres"
+        assert options.max_steps == 50
+        assert options.throw is True
+
+        surface = get("W7-X").surface
+        assert surface.sym
+        assert SourceFreeField(surface, M=2, N=2).sym_Phi == "sin"
+        assert SourceFreeField(surface, M=2, N=2, sym=False).sym_Phi is False
+
+    @pytest.mark.unit
+    def test_laplace_fields_build_physical_periods_and_setters(self):
+        """Laplace field classes build and update the selected harmonic fields."""
+        surface = FourierRZToroidalSurface(
+            R_lmn=[2.0, 0.5],
+            Z_lmn=[-0.5],
+            modes_R=[[0, 0], [1, 0]],
+            modes_Z=[[-1, 0]],
+        )
+        grid = LinearGrid(M=32, N=2, sym=False)
+        geometry = surface.compute(["x", "e_theta", "e_zeta"], grid=grid)
+
+        field = SourceFreeField(surface, M=2, N=0, I=1.2, Y=-0.7)
+        assert field.B0_base is None
+        B = field.B0.compute_magnetic_field(geometry["x"])
+        np.testing.assert_allclose(dot(B, geometry["e_theta"]).mean(), 1.2, atol=1e-12)
+        np.testing.assert_allclose(dot(B, geometry["e_zeta"]).mean(), -0.7, atol=1e-12)
+
+        field.I = np.array([2.4])
+        field.Y = np.array(-1.4)
+        updated_B = field.B0.compute_magnetic_field(geometry["x"])
+        np.testing.assert_allclose(updated_B, 2 * B, atol=1e-12)
+        with pytest.raises(TypeError, match="I must be a scalar"):
+            field.I = np.ones(2)
+        with pytest.raises(TypeError, match="Y must be a scalar"):
+            field.Y = np.ones(2)
+
+        outer = FreeSurfaceOuterField(
+            surface,
+            M=2,
+            N=0,
+            I_plasma=0.3,
+            I_sheet=0.2,
+            Y_coil=0.7,
+        )
+        outer_B = outer.B0.compute_magnetic_field(geometry["x"])
+        np.testing.assert_allclose(
+            dot(outer_B, geometry["e_theta"]).mean(), 0.5, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            dot(outer_B, geometry["e_zeta"]).mean(), 0.7, atol=1e-12
+        )
+
+    @pytest.mark.unit
+    def test_iterative_solver_throw_option(self):
+        """An under-converged GMRES solve raises unless explicitly requested."""
+        surface = get("W7-X").surface
+        grid = LinearGrid(M=12, N=12, NFP=surface.NFP, sym=False)
+        field = FreeSurfaceOuterField(
+            surface,
+            M=surface.M,
+            N=surface.N,
+            B_coil=self._Z_hat_field(),
+        )
+        options = LaplaceOptions(
+            solve_method="gmres",
+            max_steps=1,
+            atol=1e-14,
+            rtol=1e-14,
+            full_output=True,
+            throw=False,
+        )
+
+        data, _ = field.compute("Phi error", grid, options=options)
+        assert data["Phi error"] > options.atol
+
+        with pytest.raises(RuntimeError, match="maximum number of solver steps"):
+            field.compute("Phi error", grid, options=options._replace(throw=True))
+
+    @pytest.mark.unit
+    def test_interior_Dirichlet_uses_physical_poloidal_period(self, monkeypatch):
+        """The Y-period boundary data is relative to Y grad(phi), not Y grad(zeta)."""
+        captured = {}
+
+        def direct_solve(boundary_condition, *args, **kwargs):
+            captured["boundary_condition"] = boundary_condition
+            return jnp.zeros(1)
+
+        monkeypatch.setattr(laplace_compute, "_direct_solve", direct_solve)
+        data = {
+            "S[B0*n]": jnp.array([1.0, 2.0]),
+            "Phi_coil (periodic)": jnp.array([0.3, 0.4]),
+            # Use different source- and potential-grid values to ensure the
+            # correction is evaluated on the boundary-condition grid.
+            "omega": jnp.zeros(2),
+            "potential data": {"omega": jnp.array([0.1, -0.2])},
+            "interpolator": None,
+        }
+        transforms = {"Phi": type("Transform", (), {"basis": None})()}
+
+        laplace_compute._scalar_potential_mn_free_surface(
+            {"Y": 2.0},
+            transforms,
+            {},
+            data,
+            options=LaplaceOptions(solve_method="direct"),
+        )
+
+        # phi = zeta + omega, so the physical-periodic coil potential is
+        # Phi_coil(periodic) - Y*omega.
+        np.testing.assert_allclose(
+            captured["boundary_condition"],
+            jnp.array([1.0, 2.0])
+            - jnp.array([0.3, 0.4])
+            + 2.0 * jnp.array([0.1, -0.2]),
+        )
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "surface, M, N, solve_method, max_steps, chunk_size, just_err",
         [
@@ -813,6 +934,7 @@ class TestLaplace:
                 chunk_size=chunk_size,
                 atol=atol,
                 rtol=rtol,
+                throw=not just_err,
             ),
         )
         if "num_steps" in data:
@@ -1136,7 +1258,10 @@ class TestLaplace:
         data = surface.compute(["x", "n_rho"], grid=grid, basis="xyz")
         data = {"B0*n": -dot(_grad_G(data["x"] - x0), data["n_rho"])}
 
-        field = SourceFreeField(surface, grid.M, grid.N)
+        # This manufactured Green-function boundary datum is even, rather than
+        # the odd scalar-potential parity of a stellarator-symmetric magnetic
+        # field, so explicitly opt out of the surface-inferred sine basis.
+        field = SourceFreeField(surface, grid.M, grid.N, sym=False)
         data, RpZ_data = field.compute(
             ["∇φ", "Phi", "x", "n_rho"],
             grid,

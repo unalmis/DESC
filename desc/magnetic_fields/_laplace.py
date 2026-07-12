@@ -7,11 +7,193 @@ References
 
 """
 
+from math import pi
+
+from scipy.constants import mu_0
+
+from desc.backend import jnp
 from desc.basis import DoubleFourierSeries
 from desc.geometry import FourierRZToroidalSurface
+from desc.grid import LinearGrid
 from desc.integrals.singularities import get_interpolator
-from desc.magnetic_fields import ToroidalMagneticField
-from desc.utils import errorif, setdefault, warnif
+from desc.utils import errorif, setdefault
+
+from ._core import ToroidalMagneticField, _MagneticField
+
+
+def _scalar_period(value, name, allow_none=False):
+    """Return a scalar period coefficient with consistent validation."""
+    if value is None:
+        if allow_none:
+            return None
+        value = 0.0
+    value = jnp.asarray(value)
+    if value.size != 1:
+        raise TypeError(f"{name} must be a scalar, got shape {value.shape}.")
+    return value.squeeze()
+
+
+def _axis_current_field(axis, num_nodes):
+    """Build the unit-I harmonic field from a linked toroidal filament."""
+    from desc.coils import FourierRZCoil
+
+    field = FourierRZCoil(
+        current=2 * pi / mu_0,
+        R_n=axis.R_n,
+        Z_n=axis.Z_n,
+        modes_R=axis.R_basis.modes[:, 2],
+        modes_Z=axis.Z_basis.modes[:, 2],
+        NFP=axis.NFP,
+        sym=axis.sym,
+    )
+    field.rotmat = axis.rotmat
+    field.shift = axis.shift
+    # A coil source grid must span the complete closed filament.
+    source_grid = LinearGrid(zeta=int(num_nodes), NFP=1)
+    return field, source_grid
+
+
+class _SecularPotentialField(_MagneticField):
+    """Base field plus physical harmonic representatives of the I and Y periods."""
+
+    _io_attrs_ = _MagneticField._io_attrs_ + [
+        "_base_field",
+        "_I_field",
+        "_I_num_nodes",
+        "_Y_field",
+        "_I",
+        "_Y",
+    ]
+
+    def __init__(self, base_field, I_field, I_source_grid, I=0.0, Y=0.0):  # noqa: E741
+        self._base_field = base_field
+        self._I_field = I_field
+        self._I_num_nodes = I_source_grid.num_nodes
+        self._Y_field = ToroidalMagneticField(1.0, 1.0)
+        self.I = I
+        self.Y = Y
+        self._set_up()
+
+    def _set_up(self):
+        """Reconstruct runtime-only filament quadrature data after loading."""
+        self._I_source_grid = LinearGrid(zeta=int(self._I_num_nodes), NFP=1)
+
+    @property
+    def base_field(self):
+        """MagneticField: Field supplied independently of the selected periods."""
+        return self._base_field
+
+    @property
+    def I(self):  # noqa: E743
+        """float: Toroidal-current period in T m."""
+        return self._I
+
+    @I.setter
+    def I(self, new):  # noqa: E743
+        self._I = _scalar_period(new, "I")
+
+    @property
+    def Y(self):
+        """Scalar or None: Poloidal-current period in T m."""
+        return self._Y
+
+    @Y.setter
+    def Y(self, new):
+        self._Y = _scalar_period(new, "Y", allow_none=True)
+
+    def _compute_A_or_B(
+        self,
+        coords,
+        params=None,
+        basis="rpz",
+        source_grid=None,
+        transforms=None,
+        compute_A_or_B="B",
+        chunk_size=None,
+    ):
+        """Evaluate the base field and both physical period representatives."""
+        params = {} if params is None else params
+        I = params.get("I", self.I)  # noqa: E741
+        Y = params.get("Y", self.Y)
+        Y = 0.0 if Y is None else Y
+        op = {
+            "A": "compute_magnetic_vector_potential",
+            "B": "compute_magnetic_field",
+        }[compute_A_or_B]
+
+        coords = jnp.atleast_2d(jnp.asarray(coords))
+        field = jnp.zeros_like(coords, dtype=jnp.float64)
+        if self._base_field is not None:
+            field = field + getattr(self._base_field, op)(
+                coords,
+                basis=basis,
+                source_grid=source_grid,
+                transforms=transforms,
+                chunk_size=chunk_size,
+            )
+
+        # Avoid an unnecessary close-filament Biot-Savart evaluation for the
+        # overwhelmingly common zero-I interior problem. Explicit parameter
+        # overrides may be tracers, in which case the evaluation is retained.
+        if "I" in params:
+            include_I = True
+        else:
+            include_I = bool(self.I != 0)
+        if include_I:
+            field = field + I * getattr(self._I_field, op)(
+                coords,
+                basis=basis,
+                source_grid=self._I_source_grid,
+                chunk_size=chunk_size,
+            )
+
+        field = field + getattr(self._Y_field, op)(
+            coords,
+            params={"B0": Y, "R0": 1.0},
+            basis=basis,
+            chunk_size=chunk_size,
+        )
+        return field
+
+    def compute_magnetic_field(
+        self,
+        coords,
+        params=None,
+        basis="rpz",
+        source_grid=None,
+        transforms=None,
+        chunk_size=None,
+    ):
+        """Compute the physical magnetic field."""
+        return self._compute_A_or_B(
+            coords,
+            params,
+            basis,
+            source_grid,
+            transforms,
+            "B",
+            chunk_size,
+        )
+
+    def compute_magnetic_vector_potential(
+        self,
+        coords,
+        params=None,
+        basis="rpz",
+        source_grid=None,
+        transforms=None,
+        chunk_size=None,
+    ):
+        """Compute a magnetic vector potential for the physical field."""
+        return self._compute_A_or_B(
+            coords,
+            params,
+            basis,
+            source_grid,
+            transforms,
+            "A",
+            chunk_size,
+        )
 
 
 class SourceFreeField(FourierRZToroidalSurface):
@@ -24,12 +206,14 @@ class SourceFreeField(FourierRZToroidalSurface):
     closed boundary ∂𝒳. This class solves the following
     partial differential equation for
     varphi = φ = Φ (periodic) = ``Phi (periodic)``.
+    The legacy compute names ``Phi (periodic)`` and ``Phi`` both denote this
+    single-valued remainder; physical period fields are carried by ``B0``.
 
     -                  ∆φ(x) = 0   x ∈ 𝒳
     -       (B - ∇φ - B₀)(x) = 0   x ∈ 𝒳
     -     n dot (∇φ + B₀)(x) = 0   x ∈ ∂𝒳
     -             n dot B(x) = 0   x ∈ ∂𝒳
-    -       curl (B - B₀)(x) = 0   x ∉ ∂𝒳
+    -       curl (B - B₀)(x) = 0   x ∈ 𝒳
     -               div B(x) = 0   ∀x
 
     Parameters
@@ -47,19 +231,35 @@ class SourceFreeField(FourierRZToroidalSurface):
         field.
     sym : str
         Symmetry for Fourier basis interpolating the periodic part of the
-        potential. Default is ``False``.
+        potential. Default is ``sin`` when the surface is stellarator
+        symmetric and ``False`` otherwise. Pass ``False`` explicitly when the
+        boundary data do not share the surface symmetry.
     B0 : _MagneticField
-        Magnetic field due to currents in 𝒳 and net currents outside 𝒳
+        Magnetic field due to sources other than the selected ``I`` and ``Y``
+        harmonic representatives. The complete auxiliary field is exposed as
+        :attr:`B0`; the field supplied here is exposed as :attr:`B0_base`.
     I : float
-        Net toroidal current determining a circulation of Φ (not φ).
-        Default is zero.
+        Net toroidal current. Its physical harmonic representative is the field
+        of a unit-period toroidal filament on an axis inferred from ``surface``.
+        The filament lies inside the surface and is therefore intended for an
+        exterior source-free domain. Default is zero.
     Y : float
-        Net poloidal current determining a circulation of Φ (not φ).
-        Default is zero.
+        Net poloidal current. Its physical harmonic representative is
+        ``Y * grad(phi)``, implemented as a toroidal magnetic field with
+        magnitude ``Y / R``. Default is zero.
 
     """
 
-    _immediate_attributes_ = ["_surface", "_Phi_basis", "_B0", "I", "Y"]
+    _io_attrs_ = ["_surface", "_Phi_basis", "_B0", "_I", "_Y"]
+    _immediate_attributes_ = [
+        "_surface",
+        "_Phi_basis",
+        "_B0",
+        "_I",
+        "_Y",
+        "I",
+        "Y",
+    ]
 
     def __init__(
         self,
@@ -67,12 +267,13 @@ class SourceFreeField(FourierRZToroidalSurface):
         M,
         N,
         NFP=None,
-        sym=False,
+        sym=None,
         B0=None,
         I=0.0,  # noqa: E741
         Y=0.0,
     ):
         self._surface = surface
+        sym = setdefault(sym, "sin" if surface.sym else False)
         self._Phi_basis = DoubleFourierSeries(
             M=M,
             N=N,
@@ -80,9 +281,20 @@ class SourceFreeField(FourierRZToroidalSurface):
             sym=sym,
             stop_gradient=True,
         )
-        self.I = I
-        self.Y = Y
-        self._B0 = B0
+        self._I = _scalar_period(I, "I")
+        self._Y = _scalar_period(Y, "Y", allow_none=True)
+        # The linked loop need only remain inside the surface; the physical
+        # solution is invariant to this representative after the single-valued
+        # correction is solved consistently. Oversample the close filament so
+        # its normal and tangential traces are accurate on typical BIE grids.
+        axis = surface.get_axis()
+        num_axis_nodes = max(
+            128,
+            8 * (2 * surface.M + 1),
+            8 * (2 * surface.N + 1) * surface.NFP,
+        )
+        I_field, I_source_grid = _axis_current_field(axis, num_axis_nodes)
+        self._B0 = _SecularPotentialField(B0, I_field, I_source_grid, self._I, self._Y)
 
     def __getattr__(self, attr):
         return getattr(self._surface, attr)
@@ -100,6 +312,38 @@ class SourceFreeField(FourierRZToroidalSurface):
     def surface(self):
         """Surface geometry defining boundary."""
         return self._surface
+
+    @property
+    def B0(self):
+        """MagneticField: Complete auxiliary field, including the I and Y periods."""
+        return self._B0
+
+    @property
+    def B0_base(self):
+        """MagneticField: User-supplied field excluding the built period fields."""
+        return self._B0.base_field
+
+    @property
+    def I(self):  # noqa: E743
+        """float: Net toroidal-current period in T m."""
+        return self._I
+
+    @I.setter
+    def I(self, new):  # noqa: E743
+        self._I = _scalar_period(new, "I")
+        if hasattr(self, "_B0") and isinstance(self._B0, _SecularPotentialField):
+            self._B0.I = self._I
+
+    @property
+    def Y(self):
+        """Scalar or None: Net poloidal-current period in T m."""
+        return self._Y
+
+    @Y.setter
+    def Y(self, new):
+        self._Y = _scalar_period(new, "Y", allow_none=True)
+        if hasattr(self, "_B0") and isinstance(self._B0, _SecularPotentialField):
+            self._B0.Y = self._Y
 
     @property
     def Phi_basis(self):
@@ -182,7 +426,12 @@ class SourceFreeField(FourierRZToroidalSurface):
             self.N_Phi > grid.N, msg=f"Got N_Phi = {self.N_Phi} > {grid.N} = grid.N."
         )
 
-        kwargs.setdefault("B0", self._B0)
+        if "B0" not in kwargs:
+            kwargs["B0"] = self._B0
+            if params is not None:
+                B0_params = {key: params[key] for key in ("I", "Y") if key in params}
+                if B0_params:
+                    kwargs["B0_params"] = B0_params
 
         # to simplify computation of a singular integral for ∇φ
         if kwargs.get("on_boundary", False) and "eval_interpolator" not in kwargs:
@@ -240,6 +489,9 @@ class FreeSurfaceOuterField(SourceFreeField):
 
     Implements the interior Dirichlet formulation in multiply connected
     geometry described in [1]_.
+    For this formulation, the inherited ``Phi (periodic)`` and ``Phi`` compute
+    names store the globally defined tilde-Phi remainder, while ``B0``
+    supplies the physical secular field.
 
     Parameters
     ----------
@@ -270,13 +522,16 @@ class FreeSurfaceOuterField(SourceFreeField):
         Default is to compute from ``B_coil``.
     I_plasma : float
         Net toroidal plasma current determining a circulation of Φ.
-        Default is zero.
+        Default is zero. The physical representative is built from a linked
+        filament inferred from ``surface``.
     I_sheet : float
         Net toroidal sheet current determining a circulation of Φ.
-        Default is zero.
+        Default is zero. The physical representative is built from a linked
+        filament inferred from ``surface``.
 
     """
 
+    _io_attrs_ = SourceFreeField._io_attrs_ + ["_Phi_coil_basis", "_B_coil"]
     _immediate_attributes_ = ["_Phi_coil_basis", "_B_coil"]
 
     def __init__(
@@ -302,7 +557,7 @@ class FreeSurfaceOuterField(SourceFreeField):
             N,
             surface.NFP,
             sym,
-            FreeSurfaceOuterField._B0(I, Y_coil),
+            None,
             I,
             Y_coil,
         )
@@ -317,16 +572,6 @@ class FreeSurfaceOuterField(SourceFreeField):
                 stop_gradient=True,
             )
         self._B_coil = B_coil
-
-    @staticmethod
-    def _B0(I, Y):  # noqa: E741
-        """Returns ∇(Φ (secular))."""
-        warnif(
-            I != 0,
-            NotImplementedError,
-            "Must supply B0 as kwarg in compute method for correctness.",
-        )
-        return ToroidalMagneticField(setdefault(Y, 0), 1)
 
     def __setattr__(self, name, value):
         if (
@@ -379,7 +624,7 @@ class FreeSurfaceOuterField(SourceFreeField):
             msg=f"Got N_Phi_coil = {self.N_Phi_coil} > {grid.N} = grid.N.",
         )
         kwargs.setdefault("B_coil", self._B_coil)
-        if self.Y is None and (params is None or "Y" not in params):
+        if self.Y is None and (params is None or params.get("Y", None) is None):
             data, RpZ_data = super().compute(
                 "Y_coil",
                 grid,

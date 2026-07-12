@@ -909,6 +909,20 @@ class FreeSurfaceError(_Objective):
     Performance is expected to improve significantly by resolving GitHub
     issues #1034 and #2171.
 
+    The toroidal-current period is represented by the magnetic field of a
+    filament on the equilibrium magnetic axis. This is a curl-free and
+    divergence-free harmonic representative in the vacuum region, unlike the
+    ambient-coordinate field ``I * grad(theta)`` in general. The filament field
+    is normalized to have circulation ``2 * pi * I`` on the plasma boundary;
+    its normal trace enters the layer solve and its tangential trace enters the
+    final surface-field reconstruction.
+
+    The poloidal-current period is represented in the volume by
+    ``Y * grad(phi)``, where the cylindrical azimuth satisfies
+    ``phi = zeta + omega``. The FFT secular term remains ``Y * zeta``;
+    ``Y * omega`` is included in the periodic bookkeeping and the physical
+    tangential trace is restored before evaluating the pressure residual.
+
     If reverse mode differentiation is being used, it is of great benefit for
     the objective residual to be a lower dimensional item. In such cases, it is
     better to instead use a loss function that reduces the dimension of the
@@ -925,8 +939,9 @@ class FreeSurfaceError(_Objective):
 
         If is an instance of ``FreeSurfaceOuterField``
         assumes ``field._B_coil`` is the magnetic field due to coils.
-        If is an instance of ``SourceFreeField`` then assumes ``field._B0`` is
-        the magnetic field due to coils.
+        If is an instance of ``SourceFreeField`` then assumes ``field.B0_base``
+        is the magnetic field due to coils. The class-built ``I`` and ``Y``
+        representatives are handled separately so they are not double-counted.
 
         The net toroidal sheet current ``I_sheet`` is an optimizable scalar
         parameter initialized to zero.
@@ -946,8 +961,10 @@ class FreeSurfaceError(_Objective):
         Options for the Laplace solver. Defaults to ``LaplaceOptions()``, which
         defaults to the GMRES iterative solver. Other options are BiCGStab and direct.
         Fastest is typically BiCGStab (heed the note in the max_steps option).
-        If an iterative solver errors due to incompatibility with old JAX versions,
-        ``"fixed_point"`` can be selected instead if ``optimistix`` is installed.
+        Forward-mode differentiation (``deriv_mode="fwd"``) is recommended for
+        GMRES and BiCGStab. If the installed JAX/Lineax versions cannot transpose
+        a function-defined operator in reverse mode, ``"fixed_point"`` can be
+        selected instead when ``optimistix`` is installed.
     use_dft : bool
         Whether to use the DFT interpolator for singular integrals instead of the
         FFT interpolator. Default is ``False``.
@@ -1056,7 +1073,7 @@ class FreeSurfaceError(_Objective):
         )
 
         self._field = field
-        self._B_coil = field._B0 if self._is_neumann else field._B_coil
+        self._B_coil = field.B0_base if self._is_neumann else field._B_coil
         self._grid = grid
         self._eval_grid = eval_grid
         self._coil_grid = coil_grid
@@ -1073,7 +1090,7 @@ class FreeSurfaceError(_Objective):
             problem="exterior Neumann" if self._is_neumann else "interior Dirichlet"
         )
         self._options = tuple(options)  # DESC is dumb and casts NamedTuples to Tuples
-        self._grad_keys = ["grad(theta)", "grad(zeta)", "n_rho"]
+        self._grad_keys = ["grad(phi)", "n_rho"]
         self._inner_keys = [
             "|B|^2",
             "p",
@@ -1132,7 +1149,9 @@ class FreeSurfaceError(_Objective):
         options = LaplaceOptions(*self._options)
 
         eq_transforms = get_transforms(self._inner_keys, eq, grid=self._eval_grid)
-        eval_transforms = get_transforms("|K_vc|^2", self._field, grid=self._eval_grid)
+        eval_transforms = get_transforms(
+            "K_vc (periodic)", self._field, grid=self._eval_grid
+        )
         if self._use_same_grid:
             source_transforms = eval_transforms
             grad_transforms = eq_transforms
@@ -1155,12 +1174,14 @@ class FreeSurfaceError(_Objective):
         # No net poloidal current in equation 4.13 of [1].
         self._field.Y = 0.0 if self._is_neumann else data["Y_coil"]
         profiles = get_profiles(self._inner_keys, eq, grid=self._eval_grid)
+        toroidal_current_data = self._build_toroidal_current_data(eq)
         initial_guess = self._compute_initial_guess(
             eq,
             source_transforms,
             eval_transforms,
             profiles,
             data["interpolator"],
+            toroidal_current_data,
             None if self._fix_I_sheet else self.things[1].params_dict,
         )
 
@@ -1173,6 +1194,7 @@ class FreeSurfaceError(_Objective):
             "profiles": profiles,
             "initial_guess": initial_guess,
             "quad_weights": np.sqrt(eval_transforms["grid"].weights),
+            **toroidal_current_data,
         }
         self._dim_f = self._eval_grid.num_nodes
 
@@ -1187,6 +1209,57 @@ class FreeSurfaceError(_Objective):
 
         super().build(use_jit=use_jit, verbose=verbose)
 
+    def _build_toroidal_current_data(self, eq):
+        """Build a filamentary harmonic representative for the I period."""
+        from desc.magnetic_fields._laplace import _axis_current_field
+
+        # The filament is close to the evaluation surface compared with ordinary
+        # external coils, so use a deliberately dense full-torus quadrature. The
+        # lower bound is important for axisymmetric equilibria, whose axis basis
+        # itself has only one Fourier mode.
+        num_axis_nodes = max(
+            128,
+            8 * self._grid.num_theta,
+            8 * self._grid.num_zeta * eq.NFP,
+        )
+        axis_coil, axis_grid = _axis_current_field(eq.axis, num_axis_nodes)
+        # The source grid spans the complete closed axis (NFP=1), while the
+        # Fourier basis retains the equilibrium's field periodicity.  This is
+        # intentional for the Biot--Savart line integral; ``method="jitable"``
+        # suppresses Transform's one-field-period consistency warning without
+        # changing the transform matrices.
+        axis_transforms = get_transforms(
+            ["x", "x_s", "ds"], axis_coil, grid=axis_grid, method="jitable"
+        )
+        return {
+            "axis_coil": axis_coil,
+            "axis_grid": axis_grid,
+            "axis_transforms": axis_transforms,
+        }
+
+    def _toroidal_current_unit_field(self, eq_params, geometry, constants):
+        """Evaluate an axis-filament field whose nominal period is one T m."""
+        coords = jnp.column_stack([geometry["R"], geometry["phi"], geometry["Z"]])
+        return constants["axis_coil"].compute_magnetic_field(
+            coords,
+            params={
+                "current": 2 * jnp.pi / mu_0,
+                "R_n": eq_params["Ra_n"],
+                "Z_n": eq_params["Za_n"],
+                "rotmat": constants["axis_coil"].rotmat,
+                "shift": constants["axis_coil"].shift,
+            },
+            source_grid=constants["axis_grid"],
+            transforms=constants["axis_transforms"],
+            chunk_size=LaplaceOptions(*self._options).B_coil_chunk_size,
+        )
+
+    @staticmethod
+    def _normalize_toroidal_current_field(B_I_unit, I, geometry):  # noqa: E741
+        """Normalize a filament field to poloidal circulation 2 pi I."""
+        unit_period = dot(B_I_unit, geometry["e_theta"]).mean()
+        return B_I_unit * (I / unit_period)
+
     def _compute_initial_guess(
         self,
         eq,
@@ -1194,6 +1267,7 @@ class FreeSurfaceError(_Objective):
         eval_transforms,
         profiles,
         interpolator,
+        toroidal_current_data,
         I_sheet_params=None,
     ):
         """Compute the potential used to initialize iterative solves."""
@@ -1201,7 +1275,7 @@ class FreeSurfaceError(_Objective):
         params = eq.params_dict
         I_sheet = 0.0 if I_sheet_params is None else I_sheet_params["I_sheet"][0]
         source_grid = self._grid
-        source_keys = self._reuseable_keys + ["grad(theta)", "grad(zeta)", "I"]
+        source_keys = self._reuseable_keys + ["grad(phi)", "I"]
         source_data = eq.compute(
             source_keys,
             grid=source_grid,
@@ -1215,8 +1289,16 @@ class FreeSurfaceError(_Objective):
         data = {key: source_data[key] for key in self._reuseable_keys}
         data["interpolator"] = interpolator
         if not self._use_same_grid:
-            data["potential data"] = eq.compute(["R", "phi", "Z"], grid=self._eval_grid)
-        data["B0*n"] = self._phi_sec_dot_n(field_params, source_data)
+            data["potential data"] = eq.compute(
+                ["R", "phi", "omega", "Z"], grid=self._eval_grid
+            )
+        B_I_unit = self._toroidal_current_unit_field(
+            params, source_data, toroidal_current_data
+        )
+        B_I = self._normalize_toroidal_current_field(
+            B_I_unit, field_params["I"], source_data
+        )
+        data["B0*n"] = self._phi_sec_dot_n(field_params, source_data, B_I=B_I)
         if self._is_neumann:
             data, _ = self._field.compute(
                 "B_coil",
@@ -1299,6 +1381,10 @@ class FreeSurfaceError(_Objective):
             "I": inner["I"][self._eval_grid.unique_rho_idx[-1]] + I_sheet,
             "Y": self._field.Y,
         }
+        B_I_unit_eval = self._toroidal_current_unit_field(params, inner, constants)
+        unit_period = dot(B_I_unit_eval, inner["e_theta"]).mean()
+        B_I_scale = field_params["I"] / unit_period
+        B_I_eval = B_I_unit_eval * B_I_scale
         outer = {key: inner[key] for key in self._reuseable_keys}
 
         if self._is_neumann:
@@ -1329,12 +1415,12 @@ class FreeSurfaceError(_Objective):
         potential_data = (
             None
             if self._use_same_grid
-            else {key: inner[key] for key in ["R", "phi", "Z"]}
+            else {key: inner[key] for key in ["R", "phi", "omega", "Z"]}
         )
 
         if self._use_same_grid:
             outer["interpolator"] = constants["interpolator"]
-            outer["B0*n"] = self._phi_sec_dot_n(field_params, inner)
+            outer["B0*n"] = self._phi_sec_dot_n(field_params, inner, B_I=B_I_eval)
             if self._is_neumann:
                 outer["B0*n"] += dot(outer["B_coil"], inner["n_rho"])
         else:
@@ -1351,7 +1437,11 @@ class FreeSurfaceError(_Objective):
                 data["potential data"] = potential_data
             if not self._is_neumann:
                 data["Phi_coil (periodic)"] = outer["Phi_coil (periodic)"]
-            data["B0*n"] = self._phi_sec_dot_n(field_params, grads)
+            B_I_unit_source = self._toroidal_current_unit_field(
+                params, grads, constants
+            )
+            B_I_source = B_I_unit_source * B_I_scale
+            data["B0*n"] = self._phi_sec_dot_n(field_params, grads, B_I=B_I_source)
             if self._is_neumann:
                 data = compute_fun(
                     self._field,
@@ -1380,7 +1470,7 @@ class FreeSurfaceError(_Objective):
 
         outer = compute_fun(
             self._field,
-            ["K_vc", "n_rho x B_coil"] if self._is_neumann else "|K_vc|^2",
+            "K_vc (periodic)",
             field_params,
             constants["eval_transforms"],
             constants["profiles"],
@@ -1389,18 +1479,29 @@ class FreeSurfaceError(_Objective):
             B_coil=self._B_coil,
             field_grid=self._coil_grid,
         )
+        # Reconstruct the physical tangential trace from the same harmonic
+        # representatives whose normal traces entered the layer solve.
+        outer["K_vc"] = outer["K_vc (periodic)"] + cross(
+            B_I_eval + field_params["Y"] * inner["grad(phi)"],
+            inner["n_rho"],
+        )
         if self._is_neumann:
-            outer["K_vc"] -= outer["n_rho x B_coil"]
-            outer["|K_vc|^2"] = dot(outer["K_vc"], outer["K_vc"])
+            outer["K_vc"] += cross(outer["B_coil"], inner["n_rho"])
+        outer["|K_vc|^2"] = dot(outer["K_vc"], outer["K_vc"])
 
         return (outer["|K_vc|^2"] - inner["|B|^2"] - 2 * mu_0 * inner["p"]) * inner[
             "|e_theta x e_zeta|"
         ]
 
-    @staticmethod
-    def _phi_sec_dot_n(params, grads):
+    def _phi_sec_dot_n(self, params, grads, eq_params=None, constants=None, B_I=None):
+        """Normal trace of a physical harmonic representative of the periods."""
+        if B_I is None:
+            eq_params = setdefault(eq_params, self.things[0].params_dict)
+            constants = setdefault(constants, self._constants)
+            B_I_unit = self._toroidal_current_unit_field(eq_params, grads, constants)
+            B_I = self._normalize_toroidal_current_field(B_I_unit, params["I"], grads)
         return dot(
-            params["I"] * grads["grad(theta)"] + params["Y"] * grads["grad(zeta)"],
+            B_I + params["Y"] * grads["grad(phi)"],
             grads["n_rho"],
         )
 

@@ -49,14 +49,16 @@ class Options(NamedTuple):
     rtol: float = 1e-6
     """Relative error tolerance for the iterative linear solve. Default is ``1e-6``."""
 
-    max_steps: int = 10
+    max_steps: int = 50
     """Maximum number of steps for iterative linear solve.
 
     For ``"gmres"``, this is the number of restart cycles. Lineax's default
     restart length is 20, so one GMRES step applies the operator at
-    most 20 times, and ``max_steps=2`` is typically sufficient.
+    most 20 times. Two restart cycles are typically sufficient for a primal
+    solve, but differentiated solves can require more cycles.
     For ``"bicgstab"``, each step applies the operator twice, and
-    ``max_steps=50`` is typically sufficient for convergence.
+    ``max_steps=50`` is typically sufficient for convergence. The default of
+    50 is shared by all iterative methods; converged solvers terminate early.
     """
 
     problem: str = "interior Neumann"
@@ -71,8 +73,10 @@ class Options(NamedTuple):
 
     One of ``"gmres"``, ``"bicgstab"``, or ``"direct"``. Default is GMRES.
     Fastest is typically BiCGStab (heed the note in the max_steps option).
-    If an iterative solver errors due to incompatibility with old JAX versions,
-    ``"fixed_point"`` can be selected instead if ``optimistix`` is installed.
+    Forward-mode differentiation is recommended for the function-operator
+    solvers. If the installed JAX/Lineax versions cannot transpose such an
+    operator in reverse mode, ``"fixed_point"`` can be selected instead when
+    ``optimistix`` is installed.
     """
 
     full_output: bool = False
@@ -103,6 +107,14 @@ class Options(NamedTuple):
 
     Set to ``True`` to perform double-layer potential quadrature without removing
     singularities. Default is ``False``.
+    """
+
+    throw: bool = True
+    """Whether to raise an error if an iterative solve fails.
+
+    Default is ``True`` so an unconverged potential is never used silently.
+    Set this to ``False`` only when the returned status is intentionally being
+    inspected, for example when constructing a convergence scan.
     """
 
 
@@ -277,7 +289,7 @@ def _iterative_solve(
                 max_steps=options.max_steps,
             ),
             options={"y0": Phi_0},
-            throw=False,
+            throw=options.throw,
         )
         if options.full_output:
             err = jnp.abs(operator.mv(solution.value) - boundary_condition).max()
@@ -308,7 +320,7 @@ def _iterative_solve(
                 max_steps=options.max_steps,
             )
         ),
-        throw=False,
+        throw=options.throw,
     )
     if options.full_output:
         err = jnp.abs(
@@ -455,6 +467,39 @@ def _potential_grid_position(params, transforms, profiles, data, **kwargs):
 
 
 @register_compute_fun(
+    name="B0 (surface)",
+    label="B_0",
+    units="T",
+    units_long="Tesla",
+    description="Auxiliary harmonic field evaluated on the boundary surface",
+    dim=3,
+    coordinates="tz",
+    params=[],
+    transforms={"grid": []},
+    profiles=[],
+    data=["x"],
+    parameterization="desc.magnetic_fields._laplace.SourceFreeField",
+    B0="_MagneticField : Field object to compute with.",
+    B0_params="dict : Optional I and Y overrides for the auxiliary field.",
+    field_grid="Grid : Source grid used to compute magnetic field.",
+    options=Options.__doc__,
+    public=False,
+)
+def _B0_surface(params, transforms, profiles, data, **kwargs):
+    """Evaluate the physical harmonic representative used by the BIE."""
+    options = kwargs.get("options", Options())
+    field_kwargs = {
+        "coords": data["x"],
+        "source_grid": kwargs.get("field_grid", None),
+        "chunk_size": options.chunk_size,
+    }
+    if "B0_params" in kwargs:
+        field_kwargs["params"] = kwargs["B0_params"]
+    data["B0 (surface)"] = kwargs["B0"].compute_magnetic_field(**field_kwargs)
+    return data
+
+
+@register_compute_fun(
     name="S[B0*n]",
     label="S[B_0 \\cdot n_{\\rho}]",
     units="T m",
@@ -490,7 +535,7 @@ def _S_B0_n(params, transforms, profiles, data, **kwargs):
     label="\\Phi_{m n}",
     units="T m",
     units_long="Tesla meter",
-    description="Fourier coefficients of periodic part of potential",
+    description="Fourier coefficients of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
     params=[],
@@ -537,10 +582,12 @@ def _scalar_potential_mn_Neumann(params, transforms, profiles, data, **kwargs):
 
 @register_compute_fun(
     name="Phi (periodic)",
-    label="\\Phi",
+    label="\\Phi_{\\text{rem}}",
     units="T m",
     units_long="Tesla meter",
-    description="Periodic part of magnetic scalar potential",
+    description=(
+        "Single-valued potential remainder solved by the boundary integral equation"
+    ),
     dim=1,
     coordinates="tz",
     params=[],
@@ -557,10 +604,10 @@ def _Phi_periodic_potential(params, transforms, profiles, data, **kwargs):
 
 @register_compute_fun(
     name="Phi_t (periodic)",
-    label="\\partial_{\\theta} \\Phi_{\\text{periodic}}",
+    label="\\partial_{\\theta} \\Phi_{\\text{rem}}",
     units="T m",
     units_long="Tesla meter",
-    description="Magnetic scalar potential, poloidal derivative",
+    description="Poloidal derivative of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
     params=[],
@@ -577,10 +624,10 @@ def _pot_Phi_t_periodic(params, transforms, profiles, data, **kwargs):
 
 @register_compute_fun(
     name="Phi_z (periodic)",
-    label="\\partial_{\\zeta} \\Phi_{\\text{periodic}}",
+    label="\\partial_{\\zeta} \\Phi_{\\text{rem}}",
     units="T m",
     units_long="Tesla meter",
-    description="Magnetic scalar potential, toroidal derivative",
+    description="Toroidal derivative of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
     params=[],
@@ -597,10 +644,12 @@ def _pot_Phi_z_periodic(params, transforms, profiles, data, **kwargs):
 
 @register_compute_fun(
     name="K_vc (periodic)",
-    label="-n \\times \\nabla \\Phi_{\\text{periodic}}",
+    label="\\nabla \\Phi_{\\text{rem}} \\times n",
     units="T",
     units_long="Tesla",
-    description="Virtual surface current due to potential",
+    description=(
+        "Surface-current contribution from the single-valued potential remainder"
+    ),
     dim=3,
     coordinates="tz",
     params=[],
@@ -624,24 +673,25 @@ def _virtual_surface_current_periodic(params, transforms, profiles, data, **kwar
 
 @register_compute_fun(
     name="Phi",
-    label="\\Phi",
+    label="\\Phi_{\\text{rem}}",
     units="T m",
     units_long="Tesla meter",
-    description="Magnetic scalar potential",
+    description=(
+        "Single-valued potential remainder solved by the boundary integral equation"
+    ),
     dim=1,
     coordinates="tz",
-    params=["I", "Y"],
+    params=[],
     transforms={},
     profiles=[],
-    data=["Phi (periodic)", "theta", "zeta"],
+    data=["Phi (periodic)"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
 def _Phi_scalar_potential(params, transforms, profiles, data, **kwargs):
-    data["Phi"] = (
-        data["Phi (periodic)"]
-        + params["I"] * data["theta"]
-        + params["Y"] * data["zeta"]
-    )
+    # The BIE solves only the globally defined remainder. The physical period
+    # field is supplied as B0; ambient coordinate functions generally do not
+    # reproduce its tangential trace.
+    data["Phi"] = data["Phi (periodic)"]
     return data
 
 
@@ -687,67 +737,84 @@ def _Phi_num_steps(params, transforms, profiles, data, **kwargs):
 
 @register_compute_fun(
     name="Phi_t",
-    label="\\partial_{\\theta} \\Phi",
+    label="\\partial_{\\theta} \\Phi_{\\text{rem}}",
     units="T m",
     units_long="Tesla meter",
-    description="Magnetic scalar potential, poloidal derivative",
+    description="Poloidal derivative of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
-    params=["I"],
+    params=[],
     transforms={},
     profiles=[],
     data=["Phi_t (periodic)"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
 def _pot_Phi_t(params, transforms, profiles, data, **kwargs):
-    data["Phi_t"] = data["Phi_t (periodic)"] + params["I"]
+    data["Phi_t"] = data["Phi_t (periodic)"]
     return data
 
 
 @register_compute_fun(
     name="Phi_z",
-    label="\\partial_{\\zeta} \\Phi",
+    label="\\partial_{\\zeta} \\Phi_{\\text{rem}}",
     units="T m",
     units_long="Tesla meter",
-    description="Magnetic scalar potential, toroidal derivative",
+    description="Toroidal derivative of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
-    params=["Y"],
+    params=[],
     transforms={},
     profiles=[],
     data=["Phi_z (periodic)"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
 def _pot_Phi_z(params, transforms, profiles, data, **kwargs):
-    data["Phi_z"] = data["Phi_z (periodic)"] + params["Y"]
+    data["Phi_z"] = data["Phi_z (periodic)"]
     return data
 
 
 @register_compute_fun(
-    name="K_vc",
-    label="-n \\times \\nabla \\Phi",
+    name="B0 x n",
+    label="B_0 \\times n",
     units="T",
     units_long="Tesla",
-    description="Virtual surface current due to potential",
+    description="Tangential trace of the auxiliary harmonic field",
     dim=3,
     coordinates="tz",
     params=[],
     transforms={},
     profiles=[],
-    data=["n_rho x grad(theta)", "n_rho x grad(zeta)", "Phi_t", "Phi_z"],
+    data=["B0 (surface)", "n_rho"],
+    parameterization="desc.magnetic_fields._laplace.SourceFreeField",
+    public=False,
+)
+def _B0_cross_n(params, transforms, profiles, data, **kwargs):
+    data["B0 x n"] = cross(data["B0 (surface)"], data["n_rho"])
+    return data
+
+
+@register_compute_fun(
+    name="K_vc",
+    label="(\\nabla \\Phi_{\\text{rem}} + B_0) \\times n",
+    units="T",
+    units_long="Tesla",
+    description="Virtual surface current from the physical boundary field",
+    dim=3,
+    coordinates="tz",
+    params=[],
+    transforms={},
+    profiles=[],
+    data=["K_vc (periodic)", "B0 x n"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
 )
 def _virtual_surface_current(params, transforms, profiles, data, **kwargs):
-    data["K_vc"] = -(
-        data["Phi_t"][:, None] * data["n_rho x grad(theta)"]
-        + data["Phi_z"][:, None] * data["n_rho x grad(zeta)"]
-    )
+    data["K_vc"] = data["K_vc (periodic)"] + data["B0 x n"]
     return data
 
 
 @register_compute_fun(
     name="|K_vc|^2",
-    label="\\vert K_{\\text{vc}}) \\vert^2",
+    label="\\lvert K_{\\text{vc}} \\rvert^2",
     units="T^2",
     units_long="Tesla squared",
     description="Squared norm of virtual surface current",
@@ -847,28 +914,17 @@ def _total_B(params, transforms, profiles, data, RpZ_data, **kwargs):
     label="B_0 \\cdot n_{\\rho}",
     units="T",
     units_long="Tesla",
-    description="Auxillary field dotted into flux surface normal",
+    description="Auxiliary field dotted into flux surface normal",
     dim=1,
     coordinates="tz",
     params=[],
-    transforms={"grid": []},
+    transforms={},
     profiles=[],
-    data=["x", "n_rho"],
+    data=["B0 (surface)", "n_rho"],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
-    B0="_MagneticField : Field object to compute with.",
-    field_grid="Grid : Source grid used to compute magnetic field.",
-    options=Options.__doc__,
 )
 def _B0_dot_n(params, transforms, profiles, data, **kwargs):
-    options = kwargs.get("options", Options())
-    data["B0*n"] = dot(
-        kwargs["B0"].compute_magnetic_field(
-            coords=data["x"],
-            source_grid=kwargs.get("field_grid", None),
-            chunk_size=options.chunk_size,
-        ),
-        data["n_rho"],
-    )
+    data["B0*n"] = dot(data["B0 (surface)"], data["n_rho"])
     return data
 
 
@@ -877,7 +933,7 @@ def _B0_dot_n(params, transforms, profiles, data, **kwargs):
     label="B0",
     units="T",
     units_long="Tesla",
-    description="Auxillary field",
+    description="Auxiliary field",
     dim=3,
     coordinates="RpZ",
     params=[],
@@ -886,6 +942,7 @@ def _B0_dot_n(params, transforms, profiles, data, **kwargs):
     data=[],
     parameterization="desc.magnetic_fields._laplace.SourceFreeField",
     B0="_MagneticField : Field object to compute with.",
+    B0_params="dict : Optional I and Y overrides for the auxiliary field.",
     field_grid="Grid : Source grid used to compute magnetic field.",
     options=Options.__doc__,
     public=False,
@@ -893,11 +950,14 @@ def _B0_dot_n(params, transforms, profiles, data, **kwargs):
 def _B0_field(params, transforms, profiles, data, RpZ_data, **kwargs):
     options = kwargs.get("options", Options())
     coords = jnp.column_stack([RpZ_data["R"], RpZ_data["phi"], RpZ_data["Z"]])
-    RpZ_data["B0"] = kwargs["B0"].compute_magnetic_field(
-        coords=coords,
-        source_grid=kwargs.get("field_grid", None),
-        chunk_size=options.chunk_size,
-    )
+    field_kwargs = {
+        "coords": coords,
+        "source_grid": kwargs.get("field_grid", None),
+        "chunk_size": options.chunk_size,
+    }
+    if "B0_params" in kwargs:
+        field_kwargs["params"] = kwargs["B0_params"]
+    RpZ_data["B0"] = kwargs["B0"].compute_magnetic_field(**field_kwargs)
     return RpZ_data
 
 
@@ -934,7 +994,7 @@ def _B_coil_field(params, transforms, profiles, data, **kwargs):
     units="T",
     units_long="Tesla",
     description="Flux surface normal cross magnetic field due to coils",
-    dim=1,
+    dim=3,
     coordinates="rtz",
     params=[],
     transforms={},
@@ -959,6 +1019,7 @@ def _n_rho_x_B_coil(params, transforms, profiles, data, **kwargs):
     transforms={},
     profiles=[],
     data=["e_zeta", "B_coil"],
+    grid_requirement={"can_fft2": True},
     options=Options.__doc__,
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
 )
@@ -1083,25 +1144,32 @@ def _Phi_coil(params, transforms, profiles, data, **kwargs):
     label="\\Phi_{m n}",
     units="T m",
     units_long="Tesla meter",
-    description="Fourier coefficients of periodic part of potential",
+    description="Fourier coefficients of the single-valued potential remainder",
     dim=1,
     coordinates="tz",
-    params=[],
+    params=["Y"],
     transforms={"Phi": [[0, 0, 0]]},
     profiles=[],
     data=list(set(_kernel_dipole_plus_half.keys) - {"Phi (periodic)"})
-    + ["Phi_coil (periodic)", "S[B0*n]", "interpolator"],
+    + ["Phi_coil (periodic)", "omega", "S[B0*n]", "interpolator"],
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
     parameterization="desc.magnetic_fields._laplace.FreeSurfaceOuterField",
     options=Options.__doc__,
 )
 def _scalar_potential_mn_free_surface(params, transforms, profiles, data, **kwargs):
+    """Solve for tilde-Phi, the remainder relative to physical period fields."""
     # noqa: unused dependency
     options = kwargs.get("options", Options())._replace(problem="interior Dirichlet")
     _check_solve_method(options.solve_method)
 
-    boundary_condition = data["S[B0*n]"] - data["Phi_coil (periodic)"]
+    # Phi_coil (periodic) is the full periodic part of the coordinate split
+    # after subtracting Y_coil * zeta. The Green representation instead uses
+    # tilde-varphi relative to the physical harmonic field Y_coil * grad(phi),
+    # whose boundary potential is Y_coil * (zeta + omega).
+    potential_data = data.get("potential data", data)
+    varphi_tilde = data["Phi_coil (periodic)"] - params["Y"] * potential_data["omega"]
+    boundary_condition = data["S[B0*n]"] - varphi_tilde
     if options.solve_method == "direct":
         data["Phi_mn"] = _direct_solve(
             boundary_condition,

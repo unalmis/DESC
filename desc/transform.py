@@ -670,6 +670,18 @@ class Transform(IOAble):
             # if we actually added derivatives and didn't build them, then it's not
             # built
             self._built = False
+            # ``build_pinv=True`` may have initialized ``_matrices`` using the old
+            # derivative bounds. Reallocate the derivative dictionaries before
+            # building newly requested derivatives, while retaining the inverse
+            # matrices (which do not depend on derivative order).
+            if hasattr(self, "_matrices"):
+                pinv = {
+                    key: value
+                    for key, value in self._matrices.items()
+                    if key in {"pinv", "pinvA", "pinvB"}
+                }
+                self._matrices = self._get_matrices()
+                self._matrices.update(pinv)
         if build:
             # we don't update self._built here because it is still built from before,
             # but it still might have unbuilt matrices from new derivatives
