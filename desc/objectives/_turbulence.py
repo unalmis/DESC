@@ -1,5 +1,8 @@
 """Objectives for turbulence proxies."""
 
+import jax
+from packaging import version
+
 from desc.backend import jnp
 from desc.compute._turbulence import _energy_quad
 from desc.compute.utils import _compute as compute_fun
@@ -106,10 +109,11 @@ class AvailableEnergy(_Objective):
         quad_rtol=1e-6,
     ):
         errorif(
-            deriv_mode == "fwd",
+            deriv_mode == "fwd"
+            and (version.parse(jax.__version__) < version.parse("0.11.0")),
             ValueError,
-            "Reverse mode recommended for the objective: AvailableEnergy.\n"
-            "Make an issue if you need forward mode.",
+            "JAX version >= 0.11.0 required for fwd deriv mode for objective: "
+            "AvailableEnergy.",
         )
         nufft_eps = check_nufft(nufft_eps)
 
