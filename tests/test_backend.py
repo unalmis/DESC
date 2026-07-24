@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from desc.backend import _lstsq, jax, jnp, put, root, root_scalar, sign, vmap
+from desc.backend import _lstsq, fori_loop, jax, jnp, put, root, root_scalar, sign, vmap
 
 
 @pytest.mark.unit
@@ -35,6 +35,23 @@ def test_vmap():
     outputs = np.array([[0, 1, 8], [125, 64, 27], [0, -1, -8]])
     np.testing.assert_allclose(vmap(f)(inputs), outputs)
     np.testing.assert_allclose(vmap(f, out_axes=1)(inputs), outputs.T)
+
+
+@pytest.mark.unit
+def test_linear_transpose_scan():
+    """Test transposing a scan with a closed-over linear operand."""
+    x = jnp.arange(4.0)
+
+    def fun(x):
+        return fori_loop(
+            0,
+            3,
+            lambda i, value: value + (i + 1) * x,
+            jnp.zeros_like(x),
+        )
+
+    transpose = jax.linear_transpose(fun, x)(jnp.ones_like(x))[0]
+    np.testing.assert_allclose(transpose, 6 * jnp.ones_like(x))
 
 
 @pytest.mark.unit
