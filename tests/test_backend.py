@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from packaging.version import Version
 
 from desc.backend import _lstsq, fori_loop, jax, jnp, put, root, root_scalar, sign, vmap
 
@@ -38,6 +39,10 @@ def test_vmap():
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(
+    Version(jax.__version__).release != (0, 9, 2),
+    reason="DESC only backports this JAX scan-transpose fix to JAX 0.9.2",
+)
 def test_linear_transpose_scan():
     """Test transposing a scan with a closed-over linear operand."""
     x = jnp.arange(4.0)
