@@ -21,9 +21,26 @@ class AvailableEnergy(_Objective):
 
     The objective is presented in [1]_, and the computation is presented in [2]_.
     This objective computes the particle drifts using a flux tube model;
-    and therefore, has a meaningless ergodic limit. An optimization should be
-    evaluated by measuring improvement over a fixed number of field period
-    transits.
+    and therefore, has a meaningless ergodic limit. In 3-D, an optimization should
+    be evaluated by measuring improvement over a fixed number of field-period
+    transits. In axisymmetry, use one poloidal transit between global maxima of |B|.
+
+    Notes
+    -----
+    DESC uses ψ = Ψρ²/(2π) = ψₑρ², so ∂ψ/∂ρ = 2ψₑρ. Consequently, the
+    radial flux-tube width Δψ = Δρ ∂ψ/∂ρ already contains the factor of ρ
+    in Eq. (4.7) of [1]_ when Δρ = Cᵣρₗ/a, where ρₗ is the Larmor radius.
+
+    The geometric drift integrands used internally are converted from their mv²
+    convention to the particle-energy convention H = mv²/2 used in [1]_.
+
+    In axisymmetry, complete copies of the magnetic well are averaged and
+    normalized to one poloidal transit between global maxima of |B|. Choose
+    ``alpha`` and ``num_field_periods`` so the trace contains at least one complete
+    well.
+
+    The result is normalized by the thermal energy 3nT/2. It is therefore ⅔ of
+    an otherwise identical convention normalized by nT, such as Eq. (4.2) of [1]_.
 
     References
     ----------
@@ -48,10 +65,11 @@ class AvailableEnergy(_Objective):
         + doc_bounce
         + """
     radial_scale : float
-        Multiplier for the radial correlation length.
+        Dimensionless radial correlation width Δρ. This sets
+        Δψ = (∂ψ/∂ρ) Δρ and scales the radial profile gradients.
         Default is 1.0.
     binormal_scale : float
-        Multiplier for the binormal correlation length.
+        Binormal correlation-length multiplier.
         Default is 1.0.
     quad_atol : float
         Absolute tolerance for adaptive energy quadrature.

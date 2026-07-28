@@ -282,6 +282,9 @@ def _ae_well_data(
         points,
         loop=opts.loop,
     )
+    # The drift helpers factor out mv², whereas ω/H factors out H = mv²/2.
+    bounce_data[1] = 2 * bounce_data[1]
+    bounce_data[2] = 2 * bounce_data[2]
 
     ae_data = _ae_precompute(*bounce_data, fun_data)
     ae_per_pitch_well = quadgk(

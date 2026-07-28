@@ -178,7 +178,11 @@ def _energy_quad(num_energy):
     + Bounce2D.required_names,
     resolution_requirement="tz",
     grid_requirement={"can_fft2": True},
-    radial_scale="float : Multiplier for the radial correlation length.",
+    radial_scale=(
+        "float : Dimensionless radial correlation width Δρ. "
+        "This sets Δψ = (∂ψ/∂ρ) Δρ and scales the radial "
+        "profile gradients."
+    ),
     binormal_scale="float : Multiplier for the binormal correlation length.",
     quad_atol=(
         "float : Absolute tolerance for adaptive energy quadrature. "
@@ -208,13 +212,37 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
 
     Parameters
     ----------
-    radial_scale, binormal_scale : float
-        Correlation-length multipliers. Default is 1.0.
+    radial_scale : float
+        Dimensionless radial correlation width Δρ. This sets
+        Δψ = (∂ψ/∂ρ) Δρ and scales the radial profile gradients.
+        Default is 1.0.
+    binormal_scale : float
+        Binormal correlation-length multiplier. Default is 1.0.
     quad_atol, quad_rtol : float
         Tolerances for the adaptive energy quadrature.
         If ``quad_atol=0.0``, then this is interpreted as a flag to use a fixed
         quadrature, which is faster, but less accurate.
         Default is 1e-6.
+
+    Notes
+    -----
+    Here ψ = Ψρ²/(2π) = ψₑρ², so ∂ψ/∂ρ = 2ψₑρ. Consequently,
+    Δψ = Δρ ∂ψ/∂ρ already contains the factor of ρ in Eq. (4.7) of [2]_
+    when Δρ = Cᵣρₗ/a, where ρₗ is the Larmor radius.
+
+    The geometric drift integrands in ``desc.compute._drift`` are normalized by
+    mv². The frequencies in [2]_ are normalized by the particle energy
+    H = mv²/2, so both drift integrals are multiplied by two before entering the
+    available-energy kernel.
+
+    In axisymmetry, complete copies of the same magnetic well are averaged and
+    normalized to one poloidal transit between global maxima of |B|. The field-line
+    volume for that transit is Vψ/(2π|ι|). The starting ``alpha`` and
+    ``num_field_periods`` must therefore be chosen so the traced interval contains at
+    least one complete well.
+
+    The result is normalized by the thermal energy 3nT/2. It is therefore ⅔ of
+    an otherwise identical convention normalized by nT, such as Eq. (4.2) of [2]_.
 
     """
     # noqa: unused dependency
@@ -234,15 +262,31 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
             data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
         )
         weight /= pitch_inv**2
-        ae_data = Bounce2D(grid, data, data["angle"], **opts).integrate(
+        bounce = Bounce2D(grid, data, data["angle"], **opts)
+        points = bounce.points(pitch_inv, opts.num_well) if grid.num_zeta == 1 else None
+        G, G_ω_α, G_ω_ψ = bounce.integrate(
             [_sqrt_G_hat, _binormal_drift, _radial_drift],
             pitch_inv,
             data,
             names,
+            points=points,
             num_well=opts.num_well,
             loop=opts.loop,
         )
-        ae_data = _ae_precompute(*ae_data, data)
+
+        # The drift helpers factor out mv², whereas ω/H factors out H = mv²/2.
+        G_ω_α = 2 * G_ω_α
+        G_ω_ψ = 2 * G_ω_ψ
+
+        if grid.num_zeta == 1:
+            # Every axisymmetric well is an identical copy. Averaging the complete
+            # wells removes dependence on the integer tracing window and num_well.
+            well_count = (points[0] < points[1]).sum(axis=-1, keepdims=True)
+            G = safediv(G, well_count)
+            G_ω_α = safediv(G_ω_α, well_count)
+            G_ω_ψ = safediv(G_ω_ψ, well_count)
+
+        ae_data = _ae_precompute(G, G_ω_α, G_ω_ψ, data)
 
         if energy_quad is not None:
             return _ae_reduce(*ae_data, weight, energy_quad[0]).dot(energy_quad[1])
@@ -269,6 +313,8 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
         names=names,
         flux_data={
             "ae grad(density)": safediv(radial_scale * data["ne_r"], data["ne"]),
+            # ψ = ψₑρ², so ∂ψ/∂ρ already contains the ρ factor
+            # in Δψ = B₀ r Cᵣ ρₗ.
             "ae psi width": radial_scale * data["psi_r"],
             "ae alpha width": safediv(binormal_scale, data["rho"]),
             "ae grad(temperature)": safediv(radial_scale * data["Te_r"], data["Te"]),
@@ -278,6 +324,13 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
     )
     assert out.ndim == 1
 
-    scalar = jnp.sqrt(jnp.pi) * grid.NFP / (3 * opts.num_field_periods)
+    if grid.num_zeta == 1:
+        # ∫ₚₒₗ dℓ/B = Vψ/(2π|ι|) for one axisymmetric poloidal transit.
+        fieldline_normalization = grid.compress(jnp.abs(data["iota"]))
+    else:
+        # Long-field-line limit:
+        # ∫ dℓ/B → num_field_periods Vψ/(2π NFP).
+        fieldline_normalization = grid.NFP / opts.num_field_periods
+    scalar = jnp.sqrt(jnp.pi) * fieldline_normalization / 3
     data["available energy"] = grid.expand(scalar * out) / data["V_psi"]
     return data
