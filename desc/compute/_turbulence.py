@@ -293,21 +293,19 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
             data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
         )
         weight /= pitch_inv**2
-        ae_data = _ae_precompute(
-            *Bounce2D(grid, data, data["angle"], **opts).integrate(
-                [
-                    _sqrt_G_hat,
-                    _energy_normalized_binormal_drift,
-                    _energy_normalized_radial_drift,
-                ],
-                pitch_inv,
-                data,
-                names,
-                num_well=opts.num_well,
-                loop=opts.loop,
-            ),
+        ae_data = Bounce2D(grid, data, data["angle"], **opts).integrate(
+            [
+                _sqrt_G_hat,
+                _energy_normalized_binormal_drift,
+                _energy_normalized_radial_drift,
+            ],
+            pitch_inv,
             data,
+            names,
+            num_well=opts.num_well,
+            loop=opts.loop,
         )
+        ae_data = _ae_precompute(*ae_data, data)
 
         if energy_quad is not None:
             return _ae_reduce(*ae_data, weight, energy_quad[0]).dot(energy_quad[1])
