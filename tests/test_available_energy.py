@@ -190,6 +190,40 @@ def test_available_energy_quadgk_integral_matches_paper_weight_function():
 
 
 @pytest.mark.unit
+def test_available_energy_sums_distinct_wells():
+    """Every well in one retained field-line domain contributes to AE."""
+    energy = jnp.asarray([0.4, 1.3])
+    G = jnp.asarray([[[1.0, 1.7]]])
+    G_omega_alpha = jnp.asarray([[[0.6, 1.1]]])
+    G_omega_psi = jnp.asarray([[[0.2, 0.4]]])
+    data = {
+        "ae psi width": jnp.asarray([1.0]),
+        "ae alpha width": jnp.asarray([1.0]),
+        "ae grad(density)": jnp.asarray([2.0]),
+        "ae grad(temperature)": jnp.asarray([0.3]),
+    }
+    combined = _ae_reduce(
+        *_ae_precompute(G, G_omega_alpha, G_omega_psi, data),
+        jnp.ones(1),
+        energy,
+    )
+    separate = sum(
+        _ae_reduce(
+            *_ae_precompute(
+                G[..., well : well + 1],
+                G_omega_alpha[..., well : well + 1],
+                G_omega_psi[..., well : well + 1],
+                data,
+            ),
+            jnp.ones(1),
+            energy,
+        )
+        for well in range(G.shape[-1])
+    )
+    np.testing.assert_allclose(combined, separate, rtol=1e-7, atol=1e-9)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("omega_star", "num_pitch", "limit", "kernel_rtol", "asymptote_rtol"),
     [
@@ -270,6 +304,8 @@ def test_available_energy_from_optimized_near_axis_tokamak():
 
     num_field_periods = math.ceil(eq.NFP / abs(iota))
     assert num_field_periods == 1
+    num_complete_transits = math.floor(num_field_periods * abs(iota) / eq.NFP)
+    assert num_complete_transits == 1
     domain_length = num_field_periods * 2 * np.pi / eq.NFP
     transit_length = 2 * np.pi / abs(iota)
     zeta_first_max = (domain_length - transit_length) / 2
@@ -303,6 +339,8 @@ def test_available_energy_from_optimized_near_axis_tokamak():
         "alpha": np.asarray([alpha]),
         "radial_scale": 1.0,
         "binormal_scale": 1.0,
+        # The caller selects and normalizes the retained complete poloidal domain.
+        "fieldline_normalization": abs(iota) / num_complete_transits,
         "num_field_periods": num_field_periods,
         "num_well": 2,
         "num_quad": 32,
@@ -357,17 +395,21 @@ def test_available_energy_from_optimized_near_axis_tokamak():
     )
     np.testing.assert_array_equal(well_data.valid.sum(axis=1), 1)
 
-    # Averaging identical complete wells makes the axisymmetric result independent
-    # of the integer toroidal tracing window.
+    # A longer integer toroidal window retains two complete poloidal transits.
+    # Normalize by the number of transits, while still summing every well in each.
+    repeated_num_field_periods = 2
+    repeated_num_transits = math.floor(repeated_num_field_periods * abs(iota) / eq.NFP)
+    assert repeated_num_transits == 2
     repeated = eq.compute(
         "available energy",
-        num_field_periods=2,
+        num_field_periods=repeated_num_field_periods,
         num_well=3,
         num_pitch=513,
+        fieldline_normalization=abs(iota) / repeated_num_transits,
         **{
             key: value
             for key, value in common.items()
-            if key not in ("num_field_periods", "num_well")
+            if key not in ("fieldline_normalization", "num_field_periods", "num_well")
         },
     )
     np.testing.assert_allclose(

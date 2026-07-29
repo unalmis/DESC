@@ -183,7 +183,9 @@ def _ae_well_data(
     angle : ndarray, optional
         Bounce2D angle map. If omitted, it is computed from ``eq``.
     radial_scale, binormal_scale : float, optional
-        Correlation-length scale factors.
+        Correlation-length coefficients Cᵣ and Cₛ in
+        Δr_A = Cᵣρₗ and Δs_A = Cₛρₗ, respectively. The plotted quantity has
+        already factored out ρ★², so these are not physical coordinate widths.
     density_gradient, temperature_gradient : float or ndarray, optional
         Values replacing ``ne_r / ne`` and ``Te_r / Te`` before multiplication
         by ``radial_scale``. If omitted, the equilibrium profiles are used.
@@ -282,7 +284,8 @@ def _ae_well_data(
         points,
         loop=opts.loop,
     )
-    # The drift helpers factor out mv², whereas ω/H factors out H = mv²/2.
+    # Before energy normalization, G_ω/G = qω/(mv²).
+    # Equation (2.38) instead uses qω/ε₀ with ε₀ = mv²/2.
     bounce_data[1] = 2 * bounce_data[1]
     bounce_data[2] = 2 * bounce_data[2]
 
