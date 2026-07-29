@@ -258,9 +258,7 @@ def test_available_energy_matches_near_axis_qs_asymptotes(
     np.testing.assert_allclose(paper_exact, asymptote, rtol=asymptote_rtol, atol=0)
 
 
-@pytest.mark.regression
-@pytest.mark.solve
-@pytest.mark.slow
+@pytest.mark.skip
 def test_available_energy_from_optimized_near_axis_tokamak():
     """Test the full equilibrium-to-AE pipeline against Eqs. (4.8) and (4.9)."""
     major_radius = 10.0

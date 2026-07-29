@@ -27,7 +27,11 @@ from desc.backend import jit, jnp
 
 from ..integrals.bounce_integral import Bounce2D, Options
 from ..utils import safediv
-from ._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
+from ._drift import (
+    _energy_normalized_binormal_drift,
+    _energy_normalized_radial_drift,
+    _sqrt_G_hat,
+)
 from .data_index import register_compute_fun
 
 
@@ -39,8 +43,9 @@ def _ae_precompute(G, G_ω_α, G_ω_ψ, data):
     G, G_ω_α, G_ω_ψ : jnp.ndarray
         Shape (..., num alpha, num pitch, num well),
         where the ... indicates a potential leading axis of size num rho.
-        Bounce integral of ``sqrt(G)_hat``, ``binormal_drift``, and ``radial_drift``,
-        respectively.
+        Bounce integrals of ``sqrt(G)_hat``,
+        ``energy_normalized_binormal_drift``, and
+        ``energy_normalized_radial_drift``, respectively.
     data : dict[str, jnp.ndarray]
         Surface data containing conjugate widths of ae psi width, ae alpha width,
         ae grad(density), and ae grad(temperature).
@@ -256,8 +261,8 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
 
     Before energy normalization, the bounce-integral ratios satisfy
     G_ω/G = qω/(mv²). Equations (2.35) and (2.38) of [2]_ instead use
-    qω/ε₀ with ε₀ = mv²/2, so both drift integrals are multiplied by two
-    before entering the available-energy kernel.
+    qω/ε₀ with ε₀ = mv²/2. The AE-specific drift integrands apply this factor
+    of two before bounce integration.
 
     All complete wells in the traced interval are summed, as in Eq. (2.45) of [2]_.
     The compute function does not infer a special axisymmetric domain. To use k
@@ -288,21 +293,21 @@ def _available_energy(params, transforms, profiles, data, **kwargs):
             data["min_tz |B|"], data["max_tz |B|"], opts.pitch_quad
         )
         weight /= pitch_inv**2
-        G, G_ω_α, G_ω_ψ = Bounce2D(grid, data, data["angle"], **opts).integrate(
-            [_sqrt_G_hat, _binormal_drift, _radial_drift],
-            pitch_inv,
+        ae_data = _ae_precompute(
+            *Bounce2D(grid, data, data["angle"], **opts).integrate(
+                [
+                    _sqrt_G_hat,
+                    _energy_normalized_binormal_drift,
+                    _energy_normalized_radial_drift,
+                ],
+                pitch_inv,
+                data,
+                names,
+                num_well=opts.num_well,
+                loop=opts.loop,
+            ),
             data,
-            names,
-            num_well=opts.num_well,
-            loop=opts.loop,
         )
-
-        # Before energy normalization, G_ω/G = qω/(mv²).
-        # Equation (2.38) instead uses qω/ε₀ with ε₀ = mv²/2.
-        G_ω_α = 2 * G_ω_α
-        G_ω_ψ = 2 * G_ω_ψ
-
-        ae_data = _ae_precompute(G, G_ω_α, G_ω_ψ, data)
 
         if energy_quad is not None:
             return _ae_reduce(*ae_data, weight, energy_quad[0]).dot(energy_quad[1])

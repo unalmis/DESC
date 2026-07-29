@@ -40,8 +40,12 @@ class _AvailableEnergyWellData:
     valid : ndarray
         Boolean mask for wells with ordered bounce points, with shape
         ``(num_pitch, num_well)``.
-    omega_alpha, omega_psi, ae_per_pitch_well : ndarray
-        Per-pitch, per-well bounce quantities with shape
+    omega_alpha, omega_psi : ndarray
+        Dimensionless, conjugate-width-scaled bounce-averaged drift frequencies
+        used by the available-energy kernel, with shape
+        ``(num_pitch, num_well)``.
+    ae_per_pitch_well : ndarray
+        Per-pitch, per-well available energy with shape
         ``(num_pitch, num_well)``.
     """
 
@@ -202,7 +206,11 @@ def _ae_well_data(
         Per-pitch, per-well available-energy data on one flux surface and one
         field line.
     """
-    from desc.compute._drift import _binormal_drift, _radial_drift, _sqrt_G_hat
+    from desc.compute._drift import (
+        _energy_normalized_binormal_drift,
+        _energy_normalized_radial_drift,
+        _sqrt_G_hat,
+    )
     from desc.compute._turbulence import _ae_kernel, _ae_precompute
 
     bounce_names = (
@@ -277,17 +285,17 @@ def _ae_well_data(
     )
     points = bounce.points(pitch_inv, opts.num_well)
     bounce_data = bounce.integrate(
-        [_sqrt_G_hat, _binormal_drift, _radial_drift],
+        [
+            _sqrt_G_hat,
+            _energy_normalized_binormal_drift,
+            _energy_normalized_radial_drift,
+        ],
         pitch_inv,
         fun_data,
         bounce_names,
         points,
         loop=opts.loop,
     )
-    # Before energy normalization, G_ω/G = qω/(mv²).
-    # Equation (2.38) instead uses qω/ε₀ with ε₀ = mv²/2.
-    bounce_data[1] = 2 * bounce_data[1]
-    bounce_data[2] = 2 * bounce_data[2]
 
     ae_data = _ae_precompute(*bounce_data, fun_data)
     ae_per_pitch_well = quadgk(

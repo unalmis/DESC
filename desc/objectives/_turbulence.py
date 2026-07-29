@@ -39,7 +39,8 @@ class AvailableEnergy(_Objective):
 
     Before energy normalization, the bounce-integral ratios satisfy
     G_ω/G = qω/(mv²). They are converted to the qω/ε₀ convention, with
-    ε₀ = mv²/2, in Eqs. (2.35) and (2.38) of [1]_.
+    ε₀ = mv²/2, by the AE-specific drift integrands before bounce integration,
+    as required by Eqs. (2.35) and (2.38) of [1]_.
 
     Every complete well in the traced interval is summed. The registered compute
     function does not infer a special axisymmetric domain. For k complete
