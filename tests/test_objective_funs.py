@@ -2157,6 +2157,7 @@ class TestObjectiveFunction:
             grid,
             angle=angle,
             quad_atol=False,
+            fieldline_normalization=0.37,
             **opts,
         )
         obj = AvailableEnergy(
@@ -2166,6 +2167,7 @@ class TestObjectiveFunction:
             X=X,
             Y=Y,
             quad_atol=False,
+            fieldline_normalization=0.37,
             **opts,
         )
         obj.build()
