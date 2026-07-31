@@ -223,17 +223,16 @@ def _convert_basis(p, data, basis):
 def _compute(
     parameterization, names, params, transforms, profiles, data=None, **kwargs
 ):
-    """Same as above but without checking inputs for faster recursion.
+    """Compute quantities without input validation.
 
     Any vector v = v¹ R̂ + v² ϕ̂ + v³ Ẑ should be given in components
     v = [v¹, v², v³] where R̂, ϕ̂, Ẑ are the normalized basis vectors
     of the cylindrical coordinates R, ϕ, Z.
 
-    We need to directly call this function in objectives, since the checks in above
-    function are not compatible with JIT. This function computes given names while
-    using recursion to compute dependencies. If you want to call this function, you
-    cannot give the argument basis='xyz' since that will break the recursion. In that
-    case, either call above function or manually convert the output to xyz basis.
+    This function is called directly by objectives because the validation in
+    :func:`compute` is not compatible with JIT. Dependencies are evaluated in
+    topological order. The argument ``basis="xyz"`` is not supported; call
+    :func:`compute` or convert the output manually instead.
 
     Returns
     -------
@@ -279,17 +278,15 @@ def _compute_RpZ_data(
     RpZ_data,
     **kwargs,
 ):
-    """Same as above but without checking inputs for faster recursion.
+    """Compute quantities on the coordinates in ``RpZ_data`` without validation.
 
     Any vector v = v¹ R̂ + v² ϕ̂ + v³ Ẑ should be given in components
     v = [v¹, v², v³] where R̂, ϕ̂, Ẑ are the normalized basis vectors
     of the cylindrical coordinates R, ϕ, Z.
 
-    We need to directly call this function in objectives, since the checks in above
-    function are not compatible with JIT. This function computes given names while
-    using recursion to compute dependencies. If you want to call this function, you
-    cannot give the argument basis='xyz' since that will break the recursion. In that
-    case, either call above function or manually convert the output to xyz basis.
+    Dependencies are evaluated in topological order. Quantities evaluated on the
+    transform grid are read from ``data``; quantities whose coordinates are ``RpZ``
+    are evaluated into ``RpZ_data``.
 
     Returns
     -------
@@ -299,31 +296,27 @@ def _compute_RpZ_data(
 
     """
     assert kwargs.get("basis", "rpz") == "rpz", "_compute only works in rpz coordinates"
-    parameterization = _parse_parameterization(parameterization)
+    p = _parse_parameterization(parameterization)
     if isinstance(names, str):
         names = [names]
 
-    for name in names:
-        if (
-            data_index[parameterization][name]["coordinates"] != "RpZ"
-            or name in RpZ_data
-        ):
-            continue
+    # A quantity evaluated on the transform grid cannot satisfy the same quantity
+    # evaluated at RpZ_data's coordinates. Other transform-grid quantities can be
+    # reused as dependencies, as can everything already evaluated in RpZ_data.
+    available = {
+        name
+        for name in data
+        if name not in data_index[p] or data_index[p][name]["coordinates"] != "RpZ"
+    }
+    available.update(RpZ_data)
+    has_axis = bool(transforms["grid"].axis.size)
+    needed = _get_deps(p, names, data=available, has_axis=has_axis)
+    needed = sorted(needed, key=_topological_order[p].__getitem__)
 
-        if not has_RpZ_data_dependencies(parameterization, name, data, RpZ_data):
-            # then compute the missing dependencies
-            RpZ_data = _compute_RpZ_data(
-                parameterization,
-                data_index[parameterization][name]["dependencies"]["data"],
-                params=params,
-                transforms=transforms,
-                profiles=profiles,
-                data=data,
-                RpZ_data=RpZ_data,
-                **kwargs,
-            )
-        # now compute the quantity
-        RpZ_data = data_index[parameterization][name]["fun"](
+    for name in needed:
+        if data_index[p][name]["coordinates"] != "RpZ" or name in RpZ_data:
+            continue
+        RpZ_data = data_index[p][name]["fun"](
             params=params,
             transforms=transforms,
             profiles=profiles,
@@ -752,67 +745,6 @@ def get_transforms(  # noqa: C901
             t.build()
 
     return transforms
-
-
-def has_data_dependencies(parameterization, qty, data, axis=False):
-    """Determine if we have the data needed to compute qty."""
-    return _has_data(qty, data, parameterization) and (
-        not axis or _has_axis_limit_data(qty, data, parameterization)
-    )
-
-
-def has_RpZ_data_dependencies(parameterization, qty, data, RpZ_data):
-    """Determine if we have the data needed to compute qty."""
-    p = _parse_parameterization(parameterization)
-    deps = data_index[p][qty]["dependencies"]["data"]
-    return all(d in data or d in RpZ_data for d in deps)
-
-
-def has_dependencies(parameterization, qty, params, transforms, profiles, data):
-    """Determine if we have the ingredients needed to compute qty.
-
-    Parameters
-    ----------
-    parameterization : str or class
-        Type of thing we're checking dependencies for. eg desc.equilibrium.Equilibrium
-    qty : str
-        Name of something from the data index.
-    params : dict[str, jnp.ndarray]
-        Dictionary of parameters we have.
-    transforms : dict[str, Transform]
-        Dictionary of transforms we have.
-    profiles : dict[str, Profile]
-        Dictionary of profiles we have.
-    data : dict[str, jnp.ndarray]
-        Dictionary of what we've computed so far.
-
-    Returns
-    -------
-    has_dependencies : bool
-        Whether we have what we need.
-    """
-    return (
-        _has_data(qty, data, parameterization)
-        and (
-            not transforms["grid"].axis.size
-            or _has_axis_limit_data(qty, data, parameterization)
-        )
-        and _has_params(qty, params, parameterization)
-        and _has_profiles(qty, profiles, parameterization)
-        and _has_transforms(qty, transforms, parameterization)
-    )
-
-
-def _has_data(qty, data, parameterization):
-    p = _parse_parameterization(parameterization)
-    deps = data_index[p][qty]["dependencies"]["data"]
-    return all(d in data for d in deps)
-
-
-def _has_axis_limit_data(qty, data, parameterization):
-    p = _parse_parameterization(parameterization)
-    deps = data_index[p][qty]["dependencies"]["axis_limit_data"]
-    return all(d in data for d in deps)
 
 
 def _has_params(qty, params, parameterization):
