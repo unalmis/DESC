@@ -396,8 +396,8 @@ class Bounce2D(_Bounce):
         data : dict[str, jnp.ndarray]
             Data dictionary with the same structure as the data returned by the
             functions in ``desc.compute``. Must contain the quantities in
-            ``Bounce2D.required_names``, ``min_tz |B|``, ``max_tz |B|``,
-            and any entries requested by ``names``.
+            ``Bounce2D.required_names``, the minimum and maximum magnetic-field
+            strength, and any entries requested by ``names``.
         grid : Grid
             Grid on which ``data`` was computed.
         angle : jnp.ndarray
@@ -1463,8 +1463,8 @@ class Bounce1D(_Bounce):
         data : dict[str, jnp.ndarray]
             Data dictionary with the same structure as the data returned by the
             functions in ``desc.compute``. Must contain the quantities in
-            ``Bounce1D.required_names``, ``min_tz |B|``, ``max_tz |B|``,
-            and any entries requested by ``names``.
+            ``Bounce1D.required_names``, the minimum and maximum magnetic-field
+            strength, and any entries requested by ``names``.
         grid : Grid
             Grid on which ``data`` was computed.
         names : tuple[str]
